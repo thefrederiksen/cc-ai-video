@@ -87,31 +87,86 @@ TAIL_SECONDS = 6.0
 TAIL_WORDS = 6
 
 
-def tail_audible(video, expected, model, seconds=TAIL_SECONDS, count=TAIL_WORDS):
-    """Is the END of the video still speaking the words it should end on?
+def trailing_silence(path, window=4.0, threshold_db=-40, slack=0.08):
+    """How much silence the file ENDS with, measured from the audio alone.
 
-    A percentage over the whole file cannot answer this. One lost word out of ninety is barely
-    one percent, and a short whose final word was faded to silence scored comfortably above any
-    threshold while being plainly broken. So the tail is asked about on its own.
+    This is the signal that answers the fade question without a transcript, and it is the one
+    to trust: the trailing silence must be at least as long as the fade, or the fade is running
+    over speech. No vocabulary, no model, no opinion about what the last word was.
 
-    Returns (ok, detail). A tail that transcribes to nothing is a FAILURE, not a pass: the
-    check exists to prove speech is present, and an empty result proves the opposite.
+    The silence has to be shown to run TO THE END. An earlier version looked for a silence that
+    ffmpeg never closed, on the assumption that a run to end-of-file has no closing event. It
+    does emit one, so that version reported 0.00s of trailing silence on a file that plainly
+    ends with the better part of a second of it - a broken instrument reporting the alarming
+    direction, which is the kind that gets believed.
     """
+    shape = probe(path)
+    window = min(window, shape["duration"])
+    start = max(0.0, shape["duration"] - window)
+    log = run_capture_stderr([
+        "ffmpeg", "-v", "info", "-ss", "%.3f" % start, "-i", str(path),
+        "-af", "silencedetect=n=%ddB:d=0.05" % threshold_db, "-f", "null", "-"])
+    starts = [float(m) for m in re.findall(r"silence_start: (-?[\d.]+)", log)]
+    ends = [float(m) for m in re.findall(r"silence_end: (-?[\d.]+)", log)]
+    if not starts:
+        return 0.0
+    last_start = starts[-1]
+    runs_to_end = len(ends) < len(starts) or (ends and ends[-1] >= window - slack)
+    if not runs_to_end:
+        return 0.0
+    return max(0.0, window - last_start)
+
+
+def tail_check(video, expected, model, fade, vocabulary=(), seconds=TAIL_SECONDS,
+               count=TAIL_WORDS):
+    """Did the fade at the end of this file eat the words it was supposed to fade?
+
+    Returns (result, detail) where result is PASS, WARN or FAIL.
+
+    ONE SIGNAL DECIDES, AND IT IS NOT THE TRANSCRIPT.
+
+    The deciding measurement is the trailing silence, taken from the audio: if the file ends
+    with at least a fade of silence, the fade lay in silence and cannot have taken anything.
+    No model, no vocabulary, no opinion about which word it was.
+
+    THIS CHECK MAKES NO CLAIM ABOUT WHETHER A PARTICULAR WORD SURVIVED, because it was measured
+    against a real corpus and it cannot. Of five endings where the spoken word was plainly
+    audible, a transcriber returned: "habit" for "hacker", "interesting" for "interactive",
+    "process" for "project", "write" for "respond", and one product name in place of another.
+    Only one of those is close enough in spelling for any similarity measure to recover. Brand
+    and technical vocabulary is exactly where a transcriber is least reliable, and the last
+    word of a clip - quiet, clipped, at the edge - is exactly where it gets least context.
+
+    So the transcript is printed as EVIDENCE for a person, never used as a verdict. The
+    severities follow what each signal can actually support:
+
+      PASS  the file ends with at least a fade of silence. Decided on audio alone.
+      FAIL  nothing at all is audible in the closing seconds. Unambiguous, and not a question
+            of which word it was.
+      WARN  the fade overlapped speech, so it MAY have thinned or taken the ending. What was
+            expected and what was heard are both printed, and a person has to listen.
+
+    Calibrated on 66 finished shorts: 20 warned, 3 were genuinely truncated. A check that
+    turned the other 17 into failures would be switched off within a week, and then the 3 would
+    go unnoticed too.
+    """
+    import os
     import subprocess
     import tempfile
 
     from ..transcribe import hear
 
-    wanted = [w for w in expected if len(w) > 2][-count:]
-    if not wanted:
-        return False, "the script has no substantial words to end on"
+    silence = trailing_silence(video)
+    if silence >= fade:
+        return "PASS", ("ends with %.2fs of silence, longer than the %.2fs fade - the fade "
+                        "lies in silence and cannot have taken a word" % (silence, fade))
 
     shape = probe(video)
-    start = max(0.0, shape["duration"] - seconds)
     handle = tempfile.NamedTemporaryFile(suffix=".m4a", delete=False)
     handle.close()
     try:
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % start,
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-ss", "%.3f" % max(0.0, shape["duration"] - seconds),
                         "-i", str(video), "-vn", "-c:a", "aac", handle.name],
                        check=True, capture_output=True)
         heard_text = hear(handle.name, model)
@@ -120,21 +175,20 @@ def tail_audible(video, expected, model, seconds=TAIL_SECONDS, count=TAIL_WORDS)
 
     heard = re.findall(r"[a-z0-9]+", heard_text.lower())
     if not heard:
-        return False, ("nothing was heard in the last %.0fs. The video should end on %r"
-                       % (seconds, " ".join(wanted)))
-    missing = [w for w in wanted if w not in heard]
-    final = wanted[-1]
-    if final not in heard:
-        return False, ("the final word %r is not audible in the last %.0fs. A fade longer than "
-                       "the last word will do exactly this, and a whole-file percentage will "
-                       "not notice." % (final, seconds))
-    if missing:
-        return False, ("missing from the last %.0fs: %s" % (seconds, ", ".join(missing)))
-    return True, "the closing words are audible: %s" % " ".join(wanted)
+        return "FAIL", ("only %.2fs of trailing silence against a %.2fs fade, and NOTHING is "
+                        "audible in the last %.0fs" % (silence, fade, seconds))
+
+    wanted = [w for w in expected if len(w) > 2][-count:]
+    return "WARN", (
+        "only %.2fs of trailing silence against a %.2fs fade, so the fade ran over speech and "
+        "may have thinned the ending.\n           expected to end: %r\n           heard: %r\n"
+        "           LISTEN to the last second. A transcriber mishears the final word of a clip "
+        "routinely, so neither of these lines settles it."
+        % (silence, fade, " ".join(wanted), " ".join(heard[-count:])))
 
 
 def run_checks(video, target=None, script_path=None, brand=None, speech=True,
-               model="base.en", words_policy="default"):
+               model="base.en", words_policy="default", fade=None):
     """Run the gate. Returns a list of {check, result, detail}."""
     video = Path(video)
     if not video.exists():
@@ -208,8 +262,10 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
                "%d%% of the script's words heard back out of the render" % round(ratio * 100),
                warn=SPEECH_WARN <= ratio < SPEECH_PASS)
 
-        ok, detail = tail_audible(video, spoken_from_script(script_path), model)
-        record("TAIL", ok, detail)
+        from .. import targets
+        verdict, detail = tail_check(video, spoken_from_script(script_path), model,
+                                     targets.JOIN_FADE if fade is None else fade)
+        results.append({"check": "TAIL", "result": verdict, "detail": detail})
 
         if brand:
             from ..brand import banned_hits

@@ -149,7 +149,8 @@ def _lint(args):
     doc = scriptlib.parse(Path(args.script).resolve())
     problems = scriptlib.lint(doc, str(Path(args.shots).resolve()), brand,
                               card_advice=args.card_advice, publish=args.publish,
-                              words_policy=args.words_policy)
+                              words_policy=args.words_policy,
+                         fade=args.fade)
     if not problems:
         print("OK %s: %d segments, nothing to report" % (args.script, len(doc.segments)))
         return 0
@@ -338,6 +339,10 @@ def _add_qa(sub):
                         "for a fast local loop, never for a release")
     p.add_argument("--model", default="base.en")
     p.add_argument("--words-policy", default="default")
+    p.add_argument("--fade", type=float, default=None,
+                   help="the fade length the file was rendered with, in seconds. TAIL needs "
+                        "it: the trailing silence must be at least this long or the fade ran "
+                        "over speech. Defaults to this library's own join fade.")
     p.set_defaults(run=_qa)
 
 
@@ -350,7 +355,8 @@ def _qa(args):
                          brand=brand,
                          speech=not args.no_speech,
                          model=args.model,
-                         words_policy=args.words_policy)
+                         words_policy=args.words_policy,
+                         fade=args.fade)
     for row in results:
         print("%-4s %-9s %s" % (row["result"], row["check"], row["detail"]))
     fails = [r for r in results if r["result"] == "FAIL"]

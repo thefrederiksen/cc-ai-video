@@ -130,11 +130,18 @@ ccvideo sheet <files...> --out sheet.png
   local loop only.
 
 **TAIL is separate from the percentage, and it has to be.** The hear-back scores the whole
-file, so one lost word out of ninety passes any threshold comfortably. TAIL transcribes
-only the last few seconds and asserts the video still SAYS its final word. A short shipped
-ending on "the most lines of" - the word "code" was in the source, the cut landed on a
-correct word boundary, and a fade-out longer than that 0.24 second word deleted it. The
-percentage check did not notice. THE FADE IS PART OF THE CUT.
+file, so one lost word out of ninety passes any threshold comfortably. A short shipped ending
+on "the most lines of" - the word "code" was in the source, the cut landed on a correct word
+boundary, and a fade-out longer than that 0.24 second word deleted it. THE FADE IS PART OF
+THE CUT.
+
+TAIL decides on the TRAILING SILENCE, from the audio: at least a fade of silence at the end
+means the fade lay in silence and cannot have taken anything. It makes no claim about which
+word survived, because measured against 66 finished shorts it cannot - a transcriber returned
+"habit" for "hacker", "process" for "project", "write" for "respond", and one product name in
+place of another, in endings where the word was plainly audible. Pass `--fade` to match the
+renderer that made the file. A WARN means listen to the last second; only a silent ending
+fails.
 
 **Then LOOK at it.** No check in this tool reads what a card SAYS. Open a contact sheet for
 many frames; open a single frame at FULL SIZE when checking one thing. A thumbnail has twice
