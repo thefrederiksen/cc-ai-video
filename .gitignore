@@ -5,6 +5,7 @@ build/
 dist/
 *.egg-info/
 .venv/
+.venv*/
 
 # Media and everything derived from it. This repository holds tools, never footage:
 # a take, a render, a transcript or a cached voice line is somebody's material and
