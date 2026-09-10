@@ -14,9 +14,19 @@ correct, and cheap to change.
 
 **EDIT** cuts real footage the owner recorded. Judge it on speed and on not ruining good takes.
 
-## Before anything else
+## Running it
 
-Run `ccvideo --help`. Do not guess at flags.
+```
+ccvideo --help
+```
+
+If `ccvideo` is not found, **use `python -m ccvideo` instead** - same tool, and it always
+works because it goes through the interpreter that installed the package. The console script
+lands in a Scripts directory that is not always on PATH: a per-user install puts it somewhere
+PATH does not cover, and a shell that was already open will not see a PATH change made after
+it started. Neither means the install is broken.
+
+Do not guess at flags; read the help.
 
 `ffmpeg` and `ffprobe` must be on PATH. If they are not, say so and stop - there is no path
 through this tool without them.
@@ -69,7 +79,19 @@ ccvideo crop         --project P --crop x,y,w,h
 ccvideo trim-silence --project P --over 0.9
 ccvideo timeline     --project P
 ccvideo render       --project P --out out.mp4 --target shorts
+ccvideo render       --project P --out short.mp4 --target shorts \
+                     --hook "Six agents.|One person." --brand <brand> --footer example.com
 ```
+
+### The hook IS the thumbnail
+
+A platform takes a Short's FIRST FRAME as its thumbnail, so `--hook` is not decoration on top
+of the video - it is the whole of what somebody sees before deciding whether to stop scrolling.
+One or two lines, burned from frame one, with the footage inset below it and the captions in
+their own strip rather than over the picture.
+
+Write it as a claim somebody would stop for, keep each line to about 34 characters, and let the
+tool refuse anything that will not read at browse size rather than shrinking it to fit.
 
 **READ THE TRANSCRIPT BEFORE YOU CUT.** Picking which moments are worth keeping is your job
 and no algorithm does it well. The tool's job is to make the cut land cleanly once you have
@@ -106,6 +128,13 @@ ccvideo sheet <files...> --out sheet.png
   frame-checked.
 * Never skip the hear-back on anything headed for an audience. `--no-speech` is for a fast
   local loop only.
+
+**TAIL is separate from the percentage, and it has to be.** The hear-back scores the whole
+file, so one lost word out of ninety passes any threshold comfortably. TAIL transcribes
+only the last few seconds and asserts the video still SAYS its final word. A short shipped
+ending on "the most lines of" - the word "code" was in the source, the cut landed on a
+correct word boundary, and a fade-out longer than that 0.24 second word deleted it. The
+percentage check did not notice. THE FADE IS PART OF THE CUT.
 
 **Then LOOK at it.** No check in this tool reads what a card SAYS. Open a contact sheet for
 many frames; open a single frame at FULL SIZE when checking one thing. A thumbnail has twice

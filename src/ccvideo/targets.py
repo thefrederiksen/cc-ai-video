@@ -25,6 +25,22 @@ CAPTION STYLES differ because the READER differs, and all three are deliberate:
            track, not a design element.
 """
 
+# THE FADE IS PART OF THE CUT.
+#
+# Every joined clip is faded in and out by this much so the seams do not click. That fade sits
+# ON TOP of the last words of the clip, and it does not care whether they are words: it will
+# take a whole word to silence if the word is shorter than the fade and butts against the cut.
+#
+# That is not hypothetical. A shipped short ended on "the most lines of" - the word "code" was
+# there in the source, the cut landed on a correct word boundary, and a 0.25 second fade-out
+# over a 0.24 second final word deleted it. Every check that reads word timings called the cut
+# clean, because at the word level it WAS clean.
+#
+# So this number and the silence a cut edge is required to have are ONE constraint, not two.
+# `clean_edge` takes this value rather than a slack of its own, so raising the fade for a nicer
+# feel automatically raises what a cut edge must prove. Change it in one place, or not at all.
+JOIN_FADE = 0.07
+
 SIZES = {
     "desktop": (1920, 1080),
     "phone": (1080, 1920),

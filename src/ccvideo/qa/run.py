@@ -14,6 +14,7 @@ of it. Measured baselines from the pipelines this replaces: 97 to 100 percent on
 Exit 1 on any FAIL is the caller's job; this module reports.
 """
 
+import os
 import re
 from pathlib import Path
 
@@ -82,6 +83,56 @@ def heard_ratio(expected, heard_text):
     return hits / float(len(expected))
 
 
+TAIL_SECONDS = 6.0
+TAIL_WORDS = 6
+
+
+def tail_audible(video, expected, model, seconds=TAIL_SECONDS, count=TAIL_WORDS):
+    """Is the END of the video still speaking the words it should end on?
+
+    A percentage over the whole file cannot answer this. One lost word out of ninety is barely
+    one percent, and a short whose final word was faded to silence scored comfortably above any
+    threshold while being plainly broken. So the tail is asked about on its own.
+
+    Returns (ok, detail). A tail that transcribes to nothing is a FAILURE, not a pass: the
+    check exists to prove speech is present, and an empty result proves the opposite.
+    """
+    import subprocess
+    import tempfile
+
+    from ..transcribe import hear
+
+    wanted = [w for w in expected if len(w) > 2][-count:]
+    if not wanted:
+        return False, "the script has no substantial words to end on"
+
+    shape = probe(video)
+    start = max(0.0, shape["duration"] - seconds)
+    handle = tempfile.NamedTemporaryFile(suffix=".m4a", delete=False)
+    handle.close()
+    try:
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % start,
+                        "-i", str(video), "-vn", "-c:a", "aac", handle.name],
+                       check=True, capture_output=True)
+        heard_text = hear(handle.name, model)
+    finally:
+        os.unlink(handle.name)
+
+    heard = re.findall(r"[a-z0-9]+", heard_text.lower())
+    if not heard:
+        return False, ("nothing was heard in the last %.0fs. The video should end on %r"
+                       % (seconds, " ".join(wanted)))
+    missing = [w for w in wanted if w not in heard]
+    final = wanted[-1]
+    if final not in heard:
+        return False, ("the final word %r is not audible in the last %.0fs. A fade longer than "
+                       "the last word will do exactly this, and a whole-file percentage will "
+                       "not notice." % (final, seconds))
+    if missing:
+        return False, ("missing from the last %.0fs: %s" % (seconds, ", ".join(missing)))
+    return True, "the closing words are audible: %s" % " ".join(wanted)
+
+
 def run_checks(video, target=None, script_path=None, brand=None, speech=True,
                model="base.en", words_policy="default"):
     """Run the gate. Returns a list of {check, result, detail}."""
@@ -144,9 +195,11 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
     if not speech:
         skip("SPEECH", "not run. Nothing else here proves the audio is present, correct "
                        "or in sync, so this file is not cleared for release.")
+        skip("TAIL", "not run. Nothing here proves the video still says its last word.")
     elif not script_path:
         skip("SPEECH", "no --script given, so there is nothing to match what was heard "
                        "against. Pass the script that made this file.")
+        skip("TAIL", "no --script given, so the words the video should END on are not known.")
     else:
         from ..transcribe import hear
         heard_text = hear(video, model)
@@ -154,6 +207,9 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
         record("SPEECH", ratio >= SPEECH_PASS,
                "%d%% of the script's words heard back out of the render" % round(ratio * 100),
                warn=SPEECH_WARN <= ratio < SPEECH_PASS)
+
+        ok, detail = tail_audible(video, spoken_from_script(script_path), model)
+        record("TAIL", ok, detail)
 
         if brand:
             from ..brand import banned_hits

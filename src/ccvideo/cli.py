@@ -228,6 +228,13 @@ def _add_edit(sub):
     p.add_argument("--out", required=True)
     p.add_argument("--target", default="youtube", choices=sorted(targets.TARGETS))
     p.add_argument("--captions", default="", choices=["", "centre", "strip", "full", "none"])
+    p.add_argument("--hook", default="",
+                   help="one or two lines separated by '|', burned across the top from the "
+                        "FIRST frame. A platform uses that frame as the thumbnail, so this is "
+                        "the thumbnail. The footage is inset below it.")
+    p.add_argument("--brand", default="default", help="palette and product name for the hook")
+    p.add_argument("--brands", default="")
+    p.add_argument("--footer", default="", help="the line along the bottom of a hook layout")
     p.set_defaults(run=_render)
 
 
@@ -308,8 +315,11 @@ def _render(args):
     from .edit.render import render_timeline
     project = Project.open(args.project)
     target = targets.target(args.target)
+    brand = brandlib.get(args.brand, args.brands or None) if args.hook else None
+    captions = args.captions or ("strip" if args.hook else target["captions"])
     out = render_timeline(project, Path(args.out).resolve(), target,
-                          captions=args.captions or target["captions"])
+                          captions=captions, hook=args.hook, brand=brand,
+                          footer=args.footer)
     print("OK %s" % out)
     return 0
 

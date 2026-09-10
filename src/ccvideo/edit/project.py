@@ -170,8 +170,8 @@ class Project:
                 "text": wordlib.text_of(wordlib.window(
                     {"segments": [{"words": words}]}, s, e, rebase=False)),
                 "notes": notes,
-                "clean_edges": [clean_edge(words, quiet, s),
-                                clean_edge(words, quiet, e)],
+                "clean_edges": [clean_edge(words, quiet, s, side="start"),
+                                clean_edge(words, quiet, e, side="end")],
             })
 
         if append:
@@ -322,22 +322,30 @@ def resolve_source(source):
     return path, "file"
 
 
-def clean_edge(words, quiet, at, slack=0.05):
+def clean_edge(words, quiet, at, side="end", fade=None, slack=0.02):
     """Is it safe to cut here, judged from the AUDIO and the word timings only?
 
-    Two conditions, and the second is why asking about the instant alone was not enough. An
-    instant can sit inside a real pause and still fall outside a detected silence span, because
-    a level takes a moment to fall: a cut 0.25s after the last word lands in a genuine 0.9s
-    pause whose silence is only measured from 0.35s in. Asking "is this instant silent" called
-    that a hard chop.
+    A cut edge is not an instant. The renderer fades across it, and the fade will take a whole
+    word to silence if that word is shorter than the fade and butts against the cut - which is
+    how a short shipped ending on "the most lines of" with a correct word boundary and a
+    deleted final word. So the thing that must be free of speech is the FADE WINDOW: the fade
+    length before an end cut, or after a start cut.
 
-    So: the instant must not be inside a word, AND the gap it sits in must contain real
-    silence. A junction with no gap at all fails the second condition, which is exactly the
-    shape of a cut through continuous speech.
+    `fade` defaults to the renderer's own join fade, so the two cannot drift apart. Raising the
+    fade for a nicer feel automatically raises what an edge has to prove.
+
+    The second condition is separate and still needed: the gap must contain real SILENCE. A
+    level takes a moment to fall, so a cut 0.25s after the last word can sit in a genuine 0.9s
+    pause whose measured silence only begins 0.35s in. Asking whether that one instant was
+    silent called a good cut a hard chop.
     """
+    if fade is None:
+        from .. import targets
+        fade = targets.JOIN_FADE
+    low, high = (at - fade, at) if side == "end" else (at, at + fade)
     for word in words:
-        if word["start"] + slack < at < word["end"] - slack:
-            return False
+        if word["start"] < high - slack and word["end"] > low + slack:
+            return False        # the fade would run over speech and thin or delete it
     gaps = _word_gaps(words, at - 3.0, at + 3.0)
     here = [(a, b) for a, b in gaps if a - slack <= at <= b + slack]
     if not here:
@@ -361,12 +369,14 @@ def edge_notes(words, quiet, start, end):
     than resolved in favour of either.
     """
     notes = []
-    if not clean_edge(words, quiet, start):
+    if not clean_edge(words, quiet, start, side="start"):
         notes.append("EDGE: no real pause at the start (%.2f) - the cut opens inside "
-                     "continuous speech" % start)
-    if not clean_edge(words, quiet, end):
+                     "continuous speech, and the fade-in would run over the first words"
+                     % start)
+    if not clean_edge(words, quiet, end, side="end"):
         notes.append("EDGE: no real pause at the end (%.2f) - the cut lands inside continuous "
-                     "speech, which is heard as a hard chop" % end)
+                     "speech. It is heard as a hard chop, and the fade-out can take the last "
+                     "word with it" % end)
     return notes
 
 

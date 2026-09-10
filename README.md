@@ -134,6 +134,13 @@ of what should have been said comes back out of it. Pulling frames out of a rend
 was drawn and proves nothing at all about whether the audio is present, correct, or in sync -
 a desynced video shipped once having been frame-checked and passed.
 
+**TAIL is separate from the percentage, and it has to be.** The hear-back scores the whole
+file, so one lost word out of ninety passes any threshold comfortably. TAIL transcribes
+only the last few seconds and asserts the video still SAYS its final word. A short shipped
+ending on "the most lines of" - the word "code" was in the source, the cut landed on a
+correct word boundary, and a fade-out longer than that 0.24 second word deleted it. The
+percentage check did not notice. THE FADE IS PART OF THE CUT.
+
 `ccvideo sheet` builds a labelled contact sheet, because a card is rendered pixels and silent
 and no automated check in this package reads what one says. Every tile carries its file and
 timestamp, and a short grid is padded with black rather than a repeat of the last frame - two

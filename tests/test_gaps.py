@@ -69,3 +69,44 @@ def test_clean_edge_shares_no_code_with_the_boundary_rule():
     from ccvideo.edit import project
     source = inspect.getsource(project.clean_edge) + inspect.getsource(project.edge_notes)
     assert "is_boundary" not in source
+
+
+def test_a_fade_longer_than_the_final_word_is_not_a_clean_edge():
+    # THE SHIPPED DEFECT, with its real timings. A short ended on "the most lines of" - the
+    # word "code" was in the source, the cut landed on a correct word boundary, and a 0.25s
+    # fade-out over a 0.24s final word faded the whole word to silence. Word timings alone
+    # call this clean, because at the word level it IS clean.
+    from ccvideo.edit.project import clean_edge
+    words = [w(343.90, 344.20, "lines"), w(344.20, 344.44, "code")]
+    quiet = [(344.44, 346.0)]
+    assert not clean_edge(words, quiet, 344.44, side="end", fade=0.25)
+
+
+def test_the_same_edge_is_clean_when_the_fade_fits_the_silence():
+    # The relationship is the point: shorten the fade and the same cut becomes safe.
+    from ccvideo.edit.project import clean_edge
+    words = [w(343.90, 344.20, "lines"), w(344.20, 344.44, "code")]
+    quiet = [(344.44, 346.0)]
+    assert clean_edge(words, quiet, 344.50, side="end", fade=0.05)
+
+
+def test_the_edge_check_uses_the_renderers_own_fade_by_default():
+    # If these ever drift apart, raising the fade for a nicer feel silently reintroduces the
+    # defect above and no test notices. They are one constraint, so they are one number.
+    import inspect
+
+    from ccvideo import targets
+    from ccvideo.edit import project, render
+    assert "targets.JOIN_FADE" in inspect.getsource(render.render_clip)
+    assert "targets.JOIN_FADE" in inspect.getsource(project.clean_edge)
+    assert targets.JOIN_FADE > 0
+
+
+def test_a_start_cut_checks_the_fade_in_window_not_the_fade_out():
+    from ccvideo.edit.project import clean_edge
+    words = [w(10.0, 10.30, "hello")]
+    quiet = [(9.0, 10.0)]
+    # Opening exactly on the word: the fade-IN would run over it.
+    assert not clean_edge(words, quiet, 10.0, side="start", fade=0.25)
+    # Ending exactly there is fine - the fade-OUT lies in the silence before it.
+    assert clean_edge(words, quiet, 10.0, side="end", fade=0.25)
