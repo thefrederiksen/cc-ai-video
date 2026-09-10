@@ -1,0 +1,374 @@
+"""The ccvideo command line.
+
+Two halves, and the split is a product decision rather than a code one.
+
+GENERATE makes AI videos from a script. They are synthetic and there is no attempt to pass as
+a human presenter: no fake breath, no manufactured hesitation. The goal is a video that is
+clear, correct, fast to produce and cheap to change.
+
+EDIT strings real recorded footage together. It is saving the cost of an editor and moving
+faster, and every cut it makes lands on a real word boundary.
+
+Both halves finish at the same QA gate.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+from . import brand as brandlib
+from . import targets
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="ccvideo", description="Make AI videos, and cut real footage together.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    _add_tutorial(sub)
+    _add_lint(sub)
+    _add_transcribe(sub)
+    _add_edit(sub)
+    _add_qa(sub)
+    _add_sheet(sub)
+
+    args = parser.parse_args(argv)
+    return args.run(args) or 0
+
+
+# ------------------------------------------------------------------ generate
+
+def _add_tutorial(sub):
+    p = sub.add_parser("tutorial", help="a narrated video from a segment script and frames")
+    p.add_argument("--script", required=True)
+    p.add_argument("--shots", required=True, help="directory holding the IMAGE files")
+    p.add_argument("--out", required=True)
+    p.add_argument("--brand", default="default")
+    p.add_argument("--brands", default="", help="JSON file of extra or replacement brands")
+    p.add_argument("--size", default="desktop", choices=sorted(targets.SIZES),
+                   help="desktop 1920x1080 or phone 1080x1920")
+    p.add_argument("--tts", default="openai", choices=["openai", "elevenlabs"])
+    p.add_argument("--voice", default="", help="override the voice for the active provider")
+    p.add_argument("--work", default="", help="build directory (default: 'build' beside --out)")
+    p.add_argument("--lang", default="", help="language for the runtime estimate")
+    p.add_argument("--only", default="", help="build just these segment ids")
+    p.add_argument("--no-tts", action="store_true", help="cached audio only; never synthesise")
+    p.add_argument("--estimate", action="store_true", help="word count and runtime, then stop")
+    p.add_argument("--publish", action="store_true",
+                   help="this render is for publication: production placeholders are an error")
+    p.add_argument("--card-advice", type=int, default=3,
+                   help="report when a script has more title cards than this")
+    p.add_argument("--words-policy", default="default",
+                   help="which of the brand's word policies applies to this script")
+    p.add_argument("--loudness", type=float, default=None,
+                   help="level the finished file to this LUFS (try -14 for YouTube). Off by "
+                        "default, so a render stays byte-for-byte reproducible")
+    p.set_defaults(run=_tutorial)
+
+
+def _tutorial(args):
+    from .generate import script as scriptlib
+    from .generate.assemble import Build, assemble, write_timings
+    from .narrate import Voice, cache_path, cached
+
+    brand = brandlib.get(args.brand, args.brands or None)
+    target = targets.target("tutorial-phone" if args.size == "phone" else "tutorial-desktop")
+
+    shots = Path(args.shots).resolve()
+    if not shots.is_dir():
+        raise SystemExit("--shots is not a directory: %s" % shots)
+    doc = scriptlib.parse(Path(args.script).resolve())
+
+    problems = scriptlib.lint(doc, str(shots), brand, card_advice=args.card_advice,
+                              publish=args.publish, words_policy=args.words_policy)
+    if problems:
+        print(scriptlib.format_problems(problems))
+        if scriptlib.has_errors(problems):
+            raise SystemExit("the script has errors; nothing was synthesised or rendered")
+        print("")
+
+    if args.only:
+        wanted = {s.strip().zfill(3) for s in args.only.split(",")}
+        doc.segments = [s for s in doc.segments if s.id in wanted]
+        if not doc.segments:
+            raise SystemExit("--only matched no segments")
+
+    lang = scriptlib.language_of(args.script, args.lang)
+    seconds, words, cjk = scriptlib.estimate(doc, lang)
+    seconds += (0.4 + 0.7) * len(doc.segments)
+    print("estimate: %s, %d words%s, %d segments -> %02d:%02d"
+          % (lang, words, (" + %d CJK characters" % cjk) if cjk else "",
+             len(doc.segments), int(seconds // 60), int(seconds) % 60))
+    if args.estimate:
+        return 0
+
+    out = Path(args.out).resolve()
+    build = Build(Path(args.work).resolve() if args.work else out.parent / "build")
+    voice = Voice(brand, args.tts, args.voice or None)
+
+    todo = sum(1 for s in doc.segments
+               if not cached(cache_path(build.audio, s.id, s.text, voice)))
+    print("voice   : %s" % voice.describe())
+    print("brand   : %s, %s %dx%d" % (args.brand, args.size, target["width"], target["height"]))
+    print("script  : %d segments, %d needing voice" % (len(doc.segments), todo))
+
+    def report(segment, secs, label, synthesised):
+        print("  %s  %5.1fs  %s%s" % (segment.id, secs, label,
+                                      "  [voiced]" if synthesised else ""))
+
+    timings, total = assemble(doc, str(shots), out, brand, target, voice, build,
+                              allow_synthesis=not args.no_tts, on_segment=report)
+    if args.loudness is not None:
+        from .generate.assemble import normalise_loudness
+        from .shell import duration as measure
+        normalise_loudness(out, args.loudness, target["encode"])
+        total = measure(out)
+        print("  levelled to %.1f LUFS" % args.loudness)
+    timings_path = write_timings(timings, out.parent / ("%s-timings.txt" % out.stem))
+    print("\noutput  : %s" % out)
+    print("timings : %s" % timings_path)
+    print("length  : %02d:%02d (%.1f seconds)" % (int(total // 60), int(total) % 60, total))
+    return 0
+
+
+def _add_lint(sub):
+    p = sub.add_parser("lint", help="check a script without spending voice or render time")
+    p.add_argument("--script", required=True)
+    p.add_argument("--shots", required=True)
+    p.add_argument("--brand", default="default")
+    p.add_argument("--brands", default="")
+    p.add_argument("--publish", action="store_true")
+    p.add_argument("--card-advice", type=int, default=3)
+    p.add_argument("--words-policy", default="default")
+    p.set_defaults(run=_lint)
+
+
+def _lint(args):
+    from .generate import script as scriptlib
+    brand = brandlib.get(args.brand, args.brands or None)
+    doc = scriptlib.parse(Path(args.script).resolve())
+    problems = scriptlib.lint(doc, str(Path(args.shots).resolve()), brand,
+                              card_advice=args.card_advice, publish=args.publish,
+                              words_policy=args.words_policy)
+    if not problems:
+        print("OK %s: %d segments, nothing to report" % (args.script, len(doc.segments)))
+        return 0
+    print(scriptlib.format_problems(problems))
+    return 1 if scriptlib.has_errors(problems) else 0
+
+
+# ------------------------------------------------------------------ shared
+
+def _add_transcribe(sub):
+    p = sub.add_parser("transcribe", help="word-timed transcript for a media file")
+    p.add_argument("media", nargs="+")
+    p.add_argument("--out-dir", default="", help="where the words files go (default: beside)")
+    p.add_argument("--model", default="base.en")
+    p.add_argument("--language", default="en")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(run=_transcribe)
+
+
+def _transcribe(args):
+    from .transcribe import transcribe
+    for media in args.media:
+        path = transcribe(media, out_dir=args.out_dir or None, model_name=args.model,
+                          language=args.language, force=args.force)
+        print("OK %s" % path)
+    return 0
+
+
+# ------------------------------------------------------------------ edit
+
+def _add_edit(sub):
+    p = sub.add_parser("import", help="bring a take into an edit project")
+    p.add_argument("source", help="an AgentEyes recording directory, or any video file")
+    p.add_argument("--project", required=True)
+    p.add_argument("--name", default="", help="what to call this take")
+    p.add_argument("--model", default="base.en")
+    p.set_defaults(run=_import)
+
+    p = sub.add_parser("transcript", help="the project's takes as text with word timings")
+    p.add_argument("--project", required=True)
+    p.add_argument("--take", default="")
+    p.set_defaults(run=_transcript)
+
+    p = sub.add_parser("cut", help="cut by text: keep the sentences you name")
+    p.add_argument("--project", required=True)
+    p.add_argument("--take", default="")
+    p.add_argument("--keep", action="append", default=[],
+                   help="a phrase to keep; repeat for each. Cut lands on word boundaries.")
+    p.add_argument("--window", action="append", default=[],
+                   help="start-end in seconds, snapped to sentence boundaries")
+    p.add_argument("--append", action="store_true", help="add to the timeline, do not replace")
+    p.add_argument("--crop", default="", help="x,y,w,h in SOURCE pixels: the region worth "
+                                              "showing. Without one a wide screen recording "
+                                              "is unreadable in a phone frame.")
+    p.set_defaults(run=_cut)
+
+    p = sub.add_parser("crop", help="set the visible region on clips already in the timeline")
+    p.add_argument("--project", required=True)
+    p.add_argument("--clip", action="append", type=int, default=[],
+                   help="clip number; repeat for several. Omit for every clip.")
+    p.add_argument("--crop", default="", help="x,y,w,h in source pixels; empty clears it")
+    p.set_defaults(run=_crop)
+
+    p = sub.add_parser("trim-silence", help="drop dead air longer than a stated threshold")
+    p.add_argument("--project", required=True)
+    p.add_argument("--over", type=float, default=0.9, help="seconds of silence to cut past")
+    p.add_argument("--leave", type=float, default=0.25, help="seconds of breath to leave")
+    p.set_defaults(run=_trim_silence)
+
+    p = sub.add_parser("timeline", help="show the timeline as it stands")
+    p.add_argument("--project", required=True)
+    p.set_defaults(run=_timeline)
+
+    p = sub.add_parser("render", help="render the timeline to a target")
+    p.add_argument("--project", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--target", default="youtube", choices=sorted(targets.TARGETS))
+    p.add_argument("--captions", default="", choices=["", "centre", "strip", "full", "none"])
+    p.set_defaults(run=_render)
+
+
+def _import(args):
+    from .edit.project import Project
+    project = Project.open_or_create(args.project)
+    take = project.add_take(args.source, name=args.name or None, model=args.model)
+    print("OK take %s: %s, %.1fs, %d words"
+          % (take["name"], take["video"], take["duration"], take["word_count"]))
+    return 0
+
+
+def _transcript(args):
+    from .edit.project import Project
+    project = Project.open(args.project)
+    for line in project.transcript_lines(args.take or None):
+        print(line)
+    return 0
+
+
+def _cut(args):
+    from .edit.project import Project
+    project = Project.open(args.project)
+    clips = project.cut(take=args.take or None, keep=args.keep, windows=args.window,
+                        append=args.append, crop=_crop_spec(args.crop))
+    for clip in clips:
+        print("  %-16s %7.2f - %7.2f  %s" % (clip["take"], clip["start"], clip["end"],
+                                             clip["text"][:70]))
+        for note in clip.get("notes", []):
+            if note.startswith("EDGE:"):
+                print("      %s" % note)
+    print("timeline: %d clips, %.1fs" % (len(project.timeline), project.timeline_seconds()))
+    return 0
+
+
+def _crop_spec(text):
+    if not text:
+        return None
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 4 or not all(p.lstrip("-").isdigit() for p in parts):
+        raise SystemExit("a crop looks like x,y,w,h in whole source pixels, not %r" % text)
+    return [int(p) for p in parts]
+
+
+def _crop(args):
+    from .edit.project import Project
+    project = Project.open(args.project)
+    n = project.set_crop(_crop_spec(args.crop), args.clip or None)
+    print("OK crop %s on %d clip(s)" % (args.crop or "cleared", n))
+    return 0
+
+
+def _trim_silence(args):
+    from .edit.project import Project
+    project = Project.open(args.project)
+    before = project.timeline_seconds()
+    removed = project.trim_silence(over=args.over, leave=args.leave)
+    print("removed %d stretches of dead air over %.2fs: %.1fs -> %.1fs"
+          % (removed, args.over, before, project.timeline_seconds()))
+    return 0
+
+
+def _timeline(args):
+    from .edit.project import Project
+    project = Project.open(args.project)
+    at = 0.0
+    for i, clip in enumerate(project.timeline):
+        length = clip["end"] - clip["start"]
+        print("%3d  %-16s %7.2f - %7.2f  (%5.2fs at %7.2f)  %s"
+              % (i, clip["take"], clip["start"], clip["end"], length, at, clip["text"][:60]))
+        at += length
+    print("%d clips, %.1fs" % (len(project.timeline), at))
+    return 0
+
+
+def _render(args):
+    from .edit.project import Project
+    from .edit.render import render_timeline
+    project = Project.open(args.project)
+    target = targets.target(args.target)
+    out = render_timeline(project, Path(args.out).resolve(), target,
+                          captions=args.captions or target["captions"])
+    print("OK %s" % out)
+    return 0
+
+
+# ------------------------------------------------------------------ qa
+
+def _add_qa(sub):
+    p = sub.add_parser("qa", help="the machine gate a rendered file must pass")
+    p.add_argument("video")
+    p.add_argument("--target", default="", choices=[""] + sorted(targets.TARGETS))
+    p.add_argument("--script", default="", help="the script that made it, for the hear-back")
+    p.add_argument("--brand", default="", help="whose word rules to apply to what is heard")
+    p.add_argument("--brands", default="")
+    p.add_argument("--no-speech", action="store_true",
+                   help="skip the hear-back. It is the check that matters; skipping it is "
+                        "for a fast local loop, never for a release")
+    p.add_argument("--model", default="base.en")
+    p.add_argument("--words-policy", default="default")
+    p.set_defaults(run=_qa)
+
+
+def _qa(args):
+    from .qa.run import run_checks
+    brand = brandlib.get(args.brand, args.brands or None) if args.brand else None
+    results = run_checks(args.video,
+                         target=targets.target(args.target) if args.target else None,
+                         script_path=args.script or None,
+                         brand=brand,
+                         speech=not args.no_speech,
+                         model=args.model,
+                         words_policy=args.words_policy)
+    for row in results:
+        print("%-4s %-9s %s" % (row["result"], row["check"], row["detail"]))
+    fails = [r for r in results if r["result"] == "FAIL"]
+    warns = [r for r in results if r["result"] == "WARN"]
+    skips = [r for r in results if r["result"] == "SKIP"]
+    print("%s: %d FAIL, %d WARN, %d SKIP" % (args.video, len(fails), len(warns), len(skips)))
+    if skips:
+        print("NOT CLEARED: %s did not run, so nothing here covers what they check."
+              % ", ".join(r["check"] for r in skips))
+    return 1 if fails else 0
+
+
+def _add_sheet(sub):
+    p = sub.add_parser("sheet", help="a labelled contact sheet, so frames get read")
+    p.add_argument("video", nargs="+")
+    p.add_argument("--out", required=True)
+    p.add_argument("--per-video", type=int, default=3)
+    p.add_argument("--columns", type=int, default=4)
+    p.set_defaults(run=_sheet)
+
+
+def _sheet(args):
+    from .qa.sheet import build
+    out, tiles = build(args.video, Path(args.out).resolve(), args.per_video, args.columns)
+    print("OK %s  %d frames from %d file(s)" % (out, tiles, len(args.video)))
+    print("Open it and READ it. Nothing else in this package looks at what a card SAYS.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

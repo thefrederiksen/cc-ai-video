@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+.venv/
+
+# Media and everything derived from it. This repository holds tools, never footage:
+# a take, a render, a transcript or a cached voice line is somebody's material and
+# some of it is expensive.
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.mp3
+*.wav
+*.m4a
+*.srt
+*.ass
+*.words.json
+
+# The site-specific denylist for tools/scan_public.py. Never published: naming the
+# things that must not appear would itself publish them.
+.denylist

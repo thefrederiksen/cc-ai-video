@@ -1,0 +1,33 @@
+[project]
+name = "cc-ai-video"
+version = "0.1.0"
+description = "Make AI videos, and cut real footage together. One library, one CLI, one Claude Code skill."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    # Card, plate and hook drawing. 10.0 introduced the getbbox/getlength API this uses.
+    # No upper bound on purpose: an upper bound here makes pip install a SECOND, older Pillow
+    # into the user site, where it shadows the one the machine already had for every other
+    # tool. The drawing code uses only long-stable API.
+    "pillow>=10",
+    # Word timings. The whole library cuts on real word boundaries, so this is not optional:
+    # there is no estimate-based path to fall back to.
+    "faster-whisper>=1.0,<2",
+]
+
+[project.scripts]
+ccvideo = "ccvideo.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ccvideo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
