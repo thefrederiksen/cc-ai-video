@@ -72,8 +72,8 @@ class Voice:
     def key_name(self):
         return OPENAI_KEY_NAME if self.provider == "openai" else EL_KEY_NAME
 
-    def api_key(self, credentials_path=None):
-        return credentials.get(self.key_name, credentials_path)
+    def api_key(self):
+        return credentials.get(self.key_name)
 
     def fingerprint(self):
         """Identifies the exact voice. Any change here misses the cache, which is the point."""
@@ -143,8 +143,7 @@ def synthesise(text, voice, out_path, api_key):
     return out_path
 
 
-def speak(text, voice, cache_dir, segment_id, api_key=None, allow_synthesis=True,
-          credentials_path=None):
+def speak(text, voice, cache_dir, segment_id, api_key=None, allow_synthesis=True):
     """The cached voice for one segment. Returns (path, was_synthesised)."""
     path = cache_path(cache_dir, segment_id, text, voice)
     if cached(path):
@@ -155,7 +154,7 @@ def speak(text, voice, cache_dir, segment_id, api_key=None, allow_synthesis=True
             "Either drop --no-tts, or check that the voice and the brand instructions are "
             "the ones the cache was built with - a changed fingerprint misses every segment."
             % (segment_id, path.name))
-    key = api_key or voice.api_key(credentials_path)
+    key = api_key or voice.api_key()
     return synthesise(text, voice, path, key), True
 
 
