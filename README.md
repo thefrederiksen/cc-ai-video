@@ -162,8 +162,9 @@ Word rules are **configuration, and chosen per script**. A rival's name in a vid
 against it is a rule worth having; the same name in a tutorial listing which tools the product
 supports is the product's own feature list. `--words-policy` picks which applies.
 
-API keys are read at the moment of use, from the environment or a `.env`-shaped file named by
-`CCVIDEO_CREDENTIALS`. No key is ever stored, printed, or written into an output.
+API keys are read at the moment of use, from the environment only - no file is read. Start
+`ccvideo` through whatever supplies your secrets. No key is ever stored, printed, or written
+into an output.
 
 ## Design rules
 

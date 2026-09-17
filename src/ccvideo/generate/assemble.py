@@ -127,7 +127,7 @@ def write_chapters(segments, timings, path):
 
 
 def assemble(script, shots_dir, out_path, brand, target, voice, build,
-             allow_synthesis=True, credentials_path=None, on_segment=None):
+             allow_synthesis=True, on_segment=None):
     """Build the whole video. Returns (timings, total seconds).
 
     `on_segment` is called with (segment, seconds, label, was_synthesised) as each one lands,
@@ -142,8 +142,7 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
     for index, segment in enumerate(script.segments):
         picture, label = picture_for(segment, script, brand, target, build, stem, shots_dir)
         audio, synthesised = speak(segment.text, voice, build.audio, segment.id,
-                                   allow_synthesis=allow_synthesis,
-                                   credentials_path=credentials_path)
+                                   allow_synthesis=allow_synthesis)
         piece = build.segments / ("seg-%s-%s.mp4" % (stem, segment.id))
         seconds = render_segment(picture, audio, index, piece, brand, target)
         timings.append((segment.id, elapsed, seconds, label))
