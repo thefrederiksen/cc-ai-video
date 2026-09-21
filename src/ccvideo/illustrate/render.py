@@ -628,3 +628,38 @@ def join(parts, audio, out, start, end):
     if subprocess.run(cmd).returncode != 0:
         raise SystemExit("ffmpeg failed joining %s" % out)
     return out
+
+
+def _sample_chunk(job):
+    """Draw every frame the picture score would look at, shrunk the same way. Worker process."""
+    from ..qa import picture
+    scenes, times = job
+    canvas = Canvas()
+    out = []
+    for t in times:
+        img = canvas.frame(scenes, t).convert("L").resize((picture.W, picture.H), Image.BOX)
+        out.append(np.asarray(img, dtype=np.int16))
+    return out
+
+
+def sample(scenes, start, end, workers=1):
+    """(busy, diff) arrays for the frames of [start, end), drawn but never encoded - the picture
+    score of a video before it is rendered. Same rate and same arithmetic as scoring the file."""
+    import multiprocessing
+    from ..qa import picture
+    times = [start + i / float(picture.RATE) for i in range(int((end - start) * picture.RATE))]
+    workers = max(1, min(workers, len(times) // 50 or 1))
+    bounds = [len(times) * n // workers for n in range(workers + 1)]
+    jobs = [(scenes, times[bounds[n]:bounds[n + 1]]) for n in range(workers)]
+    if workers == 1:
+        grey = _sample_chunk(jobs[0])
+    else:
+        with multiprocessing.Pool(workers) as pool:
+            grey = [g for part in pool.map(_sample_chunk, jobs) for g in part]
+    busy, diff, prev = [], [], None
+    for g in grey:
+        b, d = picture.frame_busy(g, prev)
+        busy.append(b)
+        diff.append(d)
+        prev = g
+    return np.array(busy), np.array(diff)

@@ -33,6 +33,8 @@ def main(argv=None):
     _add_sheet(sub)
     _add_illustrate(sub)
     _add_image(sub)
+    _add_score(sub)
+    _add_illustrate_check(sub)
 
     args = parser.parse_args(argv)
     return args.run(args) or 0
@@ -422,6 +424,65 @@ def _illustrate(args):
     out = illus.render(scenes, brand, args.audio, args.out, args.start, args.end,
                        workers=args.workers)
     print("OK %s" % out)
+    return 0
+
+
+def _add_illustrate_check(sub):
+    p = sub.add_parser("illustrate-check",
+                       help="score a scene list's picture BEFORE rendering: frames are drawn "
+                            "and measured exactly as 'ccvideo score' measures the file")
+    p.add_argument("--words", required=True)
+    p.add_argument("--scenes", required=True)
+    p.add_argument("--start", type=float, default=0.0)
+    p.add_argument("--end", type=float, required=True)
+    p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--json", default="")
+    p.add_argument("--fail-under", type=float, default=None)
+    p.set_defaults(run=_illustrate_check)
+
+
+def _illustrate_check(args):
+    import json as _json
+    from .illustrate import render as illus, scenes as scenelib
+    from .qa import picture
+    scenes = scenelib.load(args.scenes, args.words, start=args.start, end=args.end)
+    busy, diff = illus.sample(scenes, args.start, args.end, workers=args.workers)
+    result = picture.score(busy, diff)
+    result["scenes"] = str(args.scenes)
+    # Name the scene each empty stretch falls in, so the fix goes to the right place.
+    for run in result["empty"] + result["thin"]:
+        t = args.start + run["at"]
+        run["at"] = round(t, 1)
+        run["scene"] = next((n for n, s in enumerate(scenes) if s["t0"] <= t < s["t1"]), None)
+    if args.json:
+        Path(args.json).write_text(_json.dumps(result, indent=1), encoding="utf-8")
+    print(picture.report(result))
+    if args.fail_under is not None and result["clean_percent"] < args.fail_under:
+        print("FAIL  clean %.1f%% is under %.1f%%" % (result["clean_percent"], args.fail_under))
+        return 1
+    return 0
+
+
+# ------------------------------------------------------------------ score
+
+def _add_score(sub):
+    p = sub.add_parser("score",
+                       help="score a rendered video's picture: empty screen, thin screen, "
+                            "nothing moving - pixel arithmetic, no model")
+    p.add_argument("video")
+    p.add_argument("--json", default="", help="also write the full result here")
+    p.add_argument("--fail-under", type=float, default=None,
+                   help="exit 1 when the clean percentage is below this")
+    p.set_defaults(run=_score)
+
+
+def _score(args):
+    from .qa import picture
+    result = picture.run(args.video, args.json or None)
+    print(picture.report(result))
+    if args.fail_under is not None and result["clean_percent"] < args.fail_under:
+        print("FAIL  clean %.1f%% is under %.1f%%" % (result["clean_percent"], args.fail_under))
+        return 1
     return 0
 
 
