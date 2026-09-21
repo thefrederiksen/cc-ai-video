@@ -138,6 +138,18 @@ text, box, flow, bars, counter, ruler, stack, strike, chat, person, paper, image
 * `--workers` splits the frames across processes; each encoder gets its share of the cores. A
   28-minute video takes about 30 minutes on 24 cores.
 
+Score the picture - before rendering, and on the file. Same pixel arithmetic, no model:
+
+```
+ccvideo illustrate-check --words n.words.json --scenes scenes.json --end <s> --workers 20 --fail-under 98
+ccvideo score video.mp4 --json score.json --fail-under 98
+```
+
+It lists every stretch where the screen is EMPTY (1 s or more), EMPTY-OR-THIN (3 s or more) or
+has NOTHING MOVING (6 s or more), with the time and the scene. **Read
+`docs/illustrate-lessons.md` before building the next illustrated video** - the whole pipeline
+and every lesson from the first one.
+
 ## The gate - nothing ships without it
 
 ```
