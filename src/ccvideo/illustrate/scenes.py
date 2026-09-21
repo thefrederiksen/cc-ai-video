@@ -79,8 +79,42 @@ def load(path, words_file, start=0.0, end=None):
             elements.append(el)
         scenes.append({"t0": t0, "elements": elements, "bg": scene.get("bg", "dark")})
         cursor = t0
+    _open_on_content(scenes)
     for a, b in zip(scenes, scenes[1:]):
         a["t1"] = b["t0"]
     if scenes:
         scenes[-1]["t1"] = end if end is not None else scenes[-1]["t0"] + 5.0
     return scenes
+
+
+MINOR_TEXT = 48   # text smaller than this is a label, not something to look at
+
+
+def is_minor(el):
+    """A label ('02 / THE SWITCH', 'IDEA 04') puts pixels on screen but nothing to look at."""
+    return bool(el.get("minor")) or (el["type"] == "text" and el.get("size", 90) < MINOR_TEXT)
+
+
+def first_shown(el):
+    """When an element first puts something on screen: a text element with its first part, a
+    list or a bar chart with its first item - not the moment the empty container is anchored."""
+    pieces = [x["t_in"] for x in el.get("parts", []) + el.get("items", [])]
+    return min(pieces) if pieces else el["t_in"]
+
+
+def _open_on_content(scenes):
+    """A scene begins when its first SUBSTANTIAL element arrives, not on the word it is
+    anchored to. Until then the scene before it stays on screen.
+
+    Anchoring a scene to its first word and its elements to later words left the viewer
+    looking at a bare background: 146 seconds of empty screen in 46 stretches on the first
+    28-minute video. Holding the previous, fully built scene over those words reads as a
+    pause; an empty screen reads as a fault. A scene never moves past the one after it."""
+    for n, s in enumerate(scenes):
+        shown = [first_shown(el) for el in s["elements"] if not is_minor(el)]
+        if not shown or n == 0:
+            continue
+        target = min(shown)
+        limit = scenes[n + 1]["t0"] - 0.5 if n + 1 < len(scenes) else float("inf")
+        if s["t0"] < target < limit:
+            s["t0"] = target

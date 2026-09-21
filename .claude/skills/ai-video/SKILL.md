@@ -122,26 +122,35 @@ that arrive ON the words:
 
 ```
 ccvideo illustrate --audio n.wav --words n.words.json --scenes scenes.json \
-                   --out video.mp4 --start 0 --end <seconds> --workers 20
+                   --out video.mp4 --start 0 --end <seconds> --workers 12
+ccvideo photo search "Walter Pitts"                      # real photographs, free licenses only
+ccvideo photo fetch "File:Lettvin Pitts.jpg" --out photos/pitts-lettvin.jpg
+ccvideo photo credits photos/                           # every credit, for the description
 cc-secrets run deepinfra-api-key -- ccvideo image --prompt "..." --out img/x.png
 ```
+
+Prefer a real photograph to a generated one - generated backdrops read as generic stock. A
+`person` card takes `"photo"`; a `photo` element frames a portrait or document; every picture
+fetched with `ccvideo photo` shows its credit on screen automatically.
 
 A scene list is JSON: each scene and each element has an `at` that is a phrase the speaker
 says, quoted as the transcript has it (hyphenated words are split: "British born"). Anchors
 search forward from the scene start; a phrase that is not there stops the build. Elements:
 text, box, flow, bars, counter, ruler, stack, strike, chat, person, paper, image.
 
-* Generated images are for places and moods only. A real person gets a `person` card - never a
-  generated face.
+* Generated images are a last resort, for moods only. A real person gets a `person` card, with a
+  real photograph when Commons has one - never a generated face.
+* A scene opens when its first substantial element arrives; the previous scene holds until then.
 * Render a still of every scene before the full render, and LOOK at it. Overlaps and wrapped
   lines are only visible there.
-* `--workers` splits the frames across processes; each encoder gets its share of the cores. A
-  28-minute video takes about 30 minutes on 24 cores.
+* `--workers` splits the frames across processes. **ccvideo never uses more than half the
+  cores and always runs below normal priority** - asking for more workers is capped, not an
+  error. Never work around that cap: the owner's machine runs other work beside it.
 
 Score the picture - before rendering, and on the file. Same pixel arithmetic, no model:
 
 ```
-ccvideo illustrate-check --words n.words.json --scenes scenes.json --end <s> --workers 20 --fail-under 98
+ccvideo illustrate-check --words n.words.json --scenes scenes.json --end <s> --workers 12 --fail-under 98
 ccvideo score video.mp4 --json score.json --fail-under 98
 ```
 

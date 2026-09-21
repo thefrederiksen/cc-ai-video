@@ -54,8 +54,9 @@ def test_load_resolves_scenes_elements_and_parts(tmp_path):
     path = tmp_path / "s.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
     sc = scenes.load(path, words, 0.0, 5.0)
-    assert [s["t0"] for s in sc] == [0.0, 2.0]
-    assert sc[0]["t1"] == 2.0 and sc[1]["t1"] == 5.0
+    # scene 2 is anchored at 2.0 but shows nothing until its box at 3.2 - so it opens then
+    assert [s["t0"] for s in sc] == [0.0, 3.2]
+    assert sc[0]["t1"] == 3.2 and sc[1]["t1"] == 5.0
     assert sc[1]["bg"] == "light"
     text = sc[0]["elements"][0]
     assert text["t_in"] == 0.3 and [p["t_in"] for p in text["parts"]] == [0.0, 0.6]
@@ -71,3 +72,43 @@ def test_scenes_out_of_order_are_refused(tmp_path):
                                            {"at": 1.0, "elements": []}]}), encoding="utf-8")
     with pytest.raises(SystemExit):
         scenes.load(path, words)
+
+
+def _scenes(*specs):
+    return [{"t0": t0, "elements": els} for t0, els in specs]
+
+
+def test_a_scene_opens_when_its_first_real_content_arrives():
+    label = {"type": "text", "size": 30, "t_in": 10.0}
+    card = {"type": "person", "t_in": 13.0}
+    sc = _scenes((0.0, [card | {"t_in": 0.0}]), (10.0, [label, card]), (20.0, [card | {"t_in": 20.0}]))
+    scenes._open_on_content(sc)
+    assert [s["t0"] for s in sc] == [0.0, 13.0, 20.0]
+
+
+def test_a_text_element_counts_from_its_first_part():
+    text = {"type": "text", "size": 90, "t_in": 16.0,
+            "parts": [{"t_in": 12.0}, {"t_in": 16.0}]}
+    sc = _scenes((0.0, []), (10.0, [text]), (30.0, []))
+    scenes._open_on_content(sc)
+    assert sc[1]["t0"] == 12.0
+
+
+def test_a_scene_never_moves_past_the_next_one():
+    late = {"type": "box", "t_in": 19.9}
+    sc = _scenes((0.0, []), (10.0, [late]), (20.0, []))
+    scenes._open_on_content(sc)
+    assert sc[1]["t0"] == 10.0
+
+
+def test_the_first_scene_never_moves():
+    sc = _scenes((0.0, [{"type": "box", "t_in": 5.0}]), (10.0, []))
+    scenes._open_on_content(sc)
+    assert sc[0]["t0"] == 0.0
+
+
+def test_a_list_counts_from_its_first_item_not_its_empty_container():
+    stack = {"type": "stack", "t_in": 10.0, "items": [{"t_in": 14.0}, {"t_in": 15.0}]}
+    sc = _scenes((0.0, []), (10.0, [stack]), (30.0, []))
+    scenes._open_on_content(sc)
+    assert sc[1]["t0"] == 14.0

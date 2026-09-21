@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .. import budget
 from ..shell import _require
 
 RATE = 5
@@ -47,9 +48,10 @@ STILL_STRETCH = 6.0     # seconds with nothing moving that count as a defect
 def measure(path):
     """Per-frame (busy, diff) arrays at RATE frames a second."""
     _require("ffmpeg")
-    cmd = ["ffmpeg", "-v", "error", "-i", str(path),
-           "-vf", "fps=%d,scale=%d:%d:flags=area,format=gray" % (RATE, W, H),
-           "-f", "rawvideo", "-"]
+    budget.lower_priority()
+    cmd = budget.ffmpeg(["ffmpeg", "-v", "error", "-i", str(path),
+                         "-vf", "fps=%d,scale=%d:%d:flags=area,format=gray" % (RATE, W, H),
+                         "-f", "rawvideo", "-"])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     busy, diff, prev = [], [], None
     size = W * H
