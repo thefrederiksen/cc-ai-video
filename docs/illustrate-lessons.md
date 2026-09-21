@@ -105,6 +105,12 @@ Iterate with `illustrate-check` (5 minutes), not with renders (32 minutes).
 
 ## Rendering
 
+- **Fonts ship inside the package** (`src/ccvideo/fonts`, SIL Open Font License): Inter Black
+  and Inter SemiBold, and Cascadia Mono. Version 1 used Windows' Segoe UI, which cannot be
+  copied to another machine and does not exist on a Mac, so the Mac Mini could not render at
+  all. Now a video renders to the same pixels on any machine. Inter is a little wider than
+  Segoe: re-check stills for wrapped lines after changing fonts.
+- A bright photograph (a white facade) can be darkened further with `"dim": 0.6` on the image.
 - **The library never takes the whole machine** (`budget.py`). It runs on the owner's own
   workstation next to his work and a fleet of other sessions; a 22-worker render took every
   core and ~30 GB and halted the machine until it was killed ("you halted the machine
