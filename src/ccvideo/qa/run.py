@@ -165,9 +165,10 @@ def tail_check(video, expected, model, fade, vocabulary=(), seconds=TAIL_SECONDS
     handle = tempfile.NamedTemporaryFile(suffix=".m4a", delete=False)
     handle.close()
     try:
-        subprocess.run(["ffmpeg", "-y", "-v", "error",
-                        "-ss", "%.3f" % max(0.0, shape["duration"] - seconds),
-                        "-i", str(video), "-vn", "-c:a", "aac", handle.name],
+        from .. import budget
+        subprocess.run(budget.ffmpeg(["ffmpeg", "-y", "-v", "error",
+                                      "-ss", "%.3f" % max(0.0, shape["duration"] - seconds),
+                                      "-i", str(video), "-vn", "-c:a", "aac", handle.name]),
                        check=True, capture_output=True)
         heard_text = hear(handle.name, model)
     finally:

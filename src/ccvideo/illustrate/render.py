@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from .. import budget
+
 W, H, FPS = 1920, 1080, 30
 ENTER = 0.35    # seconds an element takes to arrive
 LEAVE = 0.22    # seconds a scene takes to clear before the next one
@@ -70,13 +72,15 @@ _SCRIM = []
 
 def _scrim():
     """A picture is a backdrop, not the message: darken it most where the words sit - the
-    left and the top - so heavy type over a bright photograph still reads."""
+    left, the top and the bottom - so heavy type over a bright photograph still reads."""
     if not _SCRIM:
         xs = np.clip(np.linspace(0, 1, W) / 0.7, 0, 1)
         ys = np.clip(np.linspace(0, 1, H) / 0.35, 0, 1)
         left = 0.38 + 0.52 * xs ** 1.4
         top = 0.55 + 0.45 * ys
-        _SCRIM.append((np.minimum(left[None, :], top[:, None]))[:, :, None].astype(np.float32))
+        bottom = 0.5 + 0.5 * np.clip((1 - np.linspace(0, 1, H)) / 0.35, 0, 1)
+        rows = np.minimum(top, bottom)
+        _SCRIM.append((np.minimum(left[None, :], rows[:, None]))[:, :, None].astype(np.float32))
     return _SCRIM[0]
 
 
@@ -141,6 +145,41 @@ class Canvas:
             f = self.font(int(s * .8), "head")
             tw = d.textlength("?", font=f)
             d.text((cx - tw / 2, cy - s * .52), "?", font=f, fill=colour)
+
+    def cover(self, path, w, h, focus_y=0.3):
+        """The photograph cropped to fill w x h, keeping the point `focus_y` down the picture
+        in frame - faces sit in the upper third of a portrait."""
+        key = (path, int(w), int(h), focus_y)
+        if key not in self.images:
+            src = Image.open(path).convert("RGB")
+            scale = max(w / src.width, h / src.height)
+            src = src.resize((max(int(w), int(src.width * scale + 0.5)),
+                              max(int(h), int(src.height * scale + 0.5))), Image.LANCZOS)
+            ox = (src.width - w) / 2
+            oy = min(max(0.0, src.height * focus_y - h / 2), src.height - h)
+            self.images[key] = src.crop((int(ox), int(oy), int(ox) + int(w), int(oy) + int(h)))
+        return self.images[key]
+
+    def paste(self, img, picture, x, y, alpha, radius=0):
+        """Put a picture on the frame at (x, y), faded by alpha, optionally with round corners."""
+        mask = Image.new("L", picture.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, picture.width - 1, picture.height - 1),
+                                               radius=radius, fill=int(255 * max(0.0, min(1.0, alpha))))
+        img.paste(picture, (int(x), int(y)), mask)
+
+    @staticmethod
+    def credit(path):
+        """'Photo: author, license' from the credit file ccvideo photo fetch wrote, or None."""
+        meta = Path(str(path) + ".json")
+        if not meta.exists():
+            return None
+        import json as _json
+        info = _json.loads(meta.read_text(encoding="utf-8"))
+        author = info.get("author", "unknown")
+        if len(author) > 44:
+            author = author[:41] + "..."
+        text = "Photo: %s, %s" % (author, info.get("license", ""))
+        return text.encode("ascii", "replace").decode()
 
     def dashed_line(self, d, a, b, colour, width=3, dash=14, gap=10, offset=0.0):
         (ax, ay), (bx, by) = a, b
@@ -403,18 +442,50 @@ class Canvas:
         d.rounded_rectangle((x, y, x + w, y + h), radius=12, fill=self.c(p, "panel", a),
                             outline=self.c(p, "rule", a), width=2)
         tile = h - 40
-        d.rounded_rectangle((x + 20, y + 20, x + 20 + tile, y + 20 + tile), radius=10,
-                            fill=self.c(p, el.get("tile", "accent_fill"), a))
-        initials = "".join(w_[0] for w_ in el["name"].replace("-", " ").split()[:2]).upper()
-        fi = self.font(int(tile * 0.42), "head")
-        tw = d.textlength(initials, font=fi)
-        d.text((x + 20 + (tile - tw) / 2, y + 20 + tile * 0.2), initials, font=fi, fill=_mix(p["bg"], (255, 255, 255), a))
+        if el.get("photo"):
+            face = self.cover(el["photo"], tile, tile, el.get("focus_y", 0.28))
+            self.paste(img, face, x + 20, y + 20, a, radius=10)
+        else:
+            d.rounded_rectangle((x + 20, y + 20, x + 20 + tile, y + 20 + tile), radius=10,
+                                fill=self.c(p, el.get("tile", "accent_fill"), a))
+            initials = "".join(w_[0] for w_ in el["name"].replace("-", " ").split()[:2]).upper()
+            fi = self.font(int(tile * 0.42), "head")
+            tw = d.textlength(initials, font=fi)
+            d.text((x + 20 + (tile - tw) / 2, y + 20 + tile * 0.2), initials, font=fi,
+                   fill=_mix(p["bg"], (255, 255, 255), a))
         tx = x + tile + 50
         d.text((tx, y + 34), el["name"], font=self.font(el.get("size", 58), "head"), fill=self.c(p, "card_text", a))
         if el.get("detail"):
             d.text((tx, y + 34 + el.get("size", 58) * 1.25), el["detail"], font=self.font(32, "mono"),
                    fill=self.c(p, "muted", a))
         d.rectangle((x + w - 18, y - 8, x + w - 2, y + 8), fill=self.c(p, "warm", a))
+
+    def photo(self, img, d, p, el, t, alpha):
+        """A real photograph in a frame, pushing in slowly, credited underneath. For portraits,
+        documents and small archive pictures a full-screen backdrop would blow up or crop."""
+        raw = (t - el["t_in"]) / 0.5
+        if raw <= 0:
+            return
+        k = back(raw)
+        a = alpha * min(1.0, raw * 1.6)
+        x, y, w, h = el["x"], el["y"] + (1 - k) * 50, el["w"], el["h"]
+        pad = 10
+        d.rounded_rectangle((x - pad, y - pad, x + w + pad, y + h + pad), radius=14,
+                            fill=self.c(p, "panel", a), outline=self.c(p, "rule", a), width=2)
+        zoom = 1.0 + el.get("zoom", 0.06) * min(1.0, max(0.0, t - el["t_in"]) / 12.0)
+        big = self.cover(el["path"], int(w * zoom), int(h * zoom), el.get("focus_y", 0.35))
+        ox, oy = (big.width - w) // 2, int((big.height - h) * el.get("focus_y", 0.35))
+        self.paste(img, big.crop((ox, oy, ox + int(w), oy + int(h))), x, y, a, radius=8)
+        d = ImageDraw.Draw(img)
+        label = el.get("caption")
+        if label:
+            f = self.font(30, "mono")
+            tw = d.textlength(label, font=f)
+            d.rectangle((x + 16, y + h - 58, x + 16 + tw + 28, y + h - 14), fill=_mix(p["bg"], (10, 12, 16), a))
+            d.text((x + 30, y + h - 54), label, font=f, fill=_mix(p["bg"], (236, 240, 242), a))
+        credit = self.credit(el["path"])
+        if credit:
+            d.text((x, y + h + pad + 8), credit, font=self.font(20, "mono"), fill=self.c(p, "muted", a))
 
     def paper(self, img, d, p, el, t, alpha):
         """A page: a paper, a book, a headline. The title types on and the body lines draw in."""
@@ -499,6 +570,11 @@ class Canvas:
             d.rectangle((x1 - 20 - (tw + 32) * kc, y0, x1 - 20, y0 + 52), fill=_mix((0, 0, 0), (10, 12, 16), alpha * kc))
             if kc > 0.9:
                 d.text((x0, y0 + 6), el["caption"], font=f, fill=(236, 240, 242))
+        credit = self.credit(path)
+        if credit and t >= el["t_in"] + 0.8:
+            f = self.font(20, "mono")
+            tw = d.textlength(credit, font=f)
+            d.text((W - 90 - tw, H - 52), credit, font=f, fill=_mix((0, 0, 0), (200, 206, 210), alpha))
 
     # ------------------------------------------------------------------ frame
 
@@ -589,11 +665,12 @@ def render(scenes, brand, audio, out, start, end, fps=FPS, workers=1):
     frames = int(round((end - start) * fps))
     work = out.parent / (out.stem + ".parts")
     work.mkdir(exist_ok=True)
-    workers = max(1, min(workers, frames // (fps * 2) or 1))
+    budget.lower_priority()
+    workers = budget.workers(min(workers, frames // (fps * 2) or 1))
     bounds = [frames * n // workers for n in range(workers + 1)]
-    # Each encoder gets its share of the cores. Left to itself x264 takes threads for the whole
-    # machine in every process, and twenty-two of those ran the box out of memory mid-render.
-    threads = max(1, (os.cpu_count() or 4) // workers)
+    # Each encoder gets its share of the HALF of the cores this library may use. Left to itself
+    # x264 takes threads for the whole machine in every process.
+    threads = budget.encoder_threads(workers)
     jobs = [(scenes, start, bounds[n], bounds[n + 1], fps, work / ("part-%03d.mp4" % n), threads)
             for n in range(workers)]
     print("  %d frames in %d run(s)" % (frames, workers), flush=True)
@@ -625,7 +702,7 @@ def join(parts, audio, out, start, end):
            "-map", "0:v", "-map", "1:a", "-c:v", "copy",
            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
            "-movflags", "+faststart", "-shortest", str(out)]
-    if subprocess.run(cmd).returncode != 0:
+    if subprocess.run(budget.ffmpeg(cmd)).returncode != 0:
         raise SystemExit("ffmpeg failed joining %s" % out)
     return out
 
@@ -648,7 +725,8 @@ def sample(scenes, start, end, workers=1):
     import multiprocessing
     from ..qa import picture
     times = [start + i / float(picture.RATE) for i in range(int((end - start) * picture.RATE))]
-    workers = max(1, min(workers, len(times) // 50 or 1))
+    budget.lower_priority()
+    workers = budget.workers(min(workers, len(times) // 50 or 1))
     bounds = [len(times) * n // workers for n in range(workers + 1)]
     jobs = [(scenes, times[bounds[n]:bounds[n + 1]]) for n in range(workers)]
     if workers == 1:

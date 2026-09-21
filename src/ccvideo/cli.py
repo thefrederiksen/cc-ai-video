@@ -21,6 +21,8 @@ from . import targets
 
 
 def main(argv=None):
+    from . import budget
+    budget.lower_priority()   # before anything starts: every worker and ffmpeg inherits it
     parser = argparse.ArgumentParser(
         prog="ccvideo", description="Make AI videos, and cut real footage together.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -33,6 +35,7 @@ def main(argv=None):
     _add_sheet(sub)
     _add_illustrate(sub)
     _add_image(sub)
+    _add_photo(sub)
     _add_score(sub)
     _add_illustrate_check(sub)
 
@@ -411,7 +414,8 @@ def _add_illustrate(sub):
     p.add_argument("--brand", default="devthrottle")
     p.add_argument("--brands", default="")
     p.add_argument("--workers", type=int, default=1,
-                   help="render in this many processes side by side; the result is identical")
+                   help="render in this many processes side by side; the result is identical. "
+                        "Capped at half the cores, whatever is asked")
     p.set_defaults(run=_illustrate)
 
 
@@ -460,6 +464,48 @@ def _illustrate_check(args):
     if args.fail_under is not None and result["clean_percent"] < args.fail_under:
         print("FAIL  clean %.1f%% is under %.1f%%" % (result["clean_percent"], args.fail_under))
         return 1
+    return 0
+
+
+# ------------------------------------------------------------------ photo
+
+def _add_photo(sub):
+    p = sub.add_parser("photo", help="real photographs from Wikimedia Commons, free licenses "
+                                     "only, each saved with its credit")
+    ps = p.add_subparsers(dest="photo_cmd", required=True)
+    s = ps.add_parser("search", help="list candidate photographs; nothing is downloaded")
+    s.add_argument("query")
+    s.add_argument("--limit", type=int, default=12)
+    f = ps.add_parser("fetch", help="download one file and write its credit beside it")
+    f.add_argument("title", help='the Commons file name, e.g. "File:Lettvin Pitts.jpg"')
+    f.add_argument("--out", required=True)
+    f.add_argument("--width", type=int, default=2400)
+    c = ps.add_parser("credits", help="the credits of every photograph in a folder")
+    c.add_argument("folder")
+    p.set_defaults(run=_photo)
+
+
+def _ascii(text):
+    """Commons names are full of accents; this tool prints ASCII only."""
+    return str(text).encode("ascii", "replace").decode()
+
+
+def _photo(args):
+    from . import photos
+    if args.photo_cmd == "search":
+        for f in photos.search(args.query, args.limit):
+            print(_ascii("%s %-60s %5sx%-5s %-14s %s" % ("FREE " if f["free"] else "NOT  ",
+                  f["title"][:60], f["width"], f["height"], f["license"][:14], f["author"][:40])))
+            if f["description"]:
+                print(_ascii("      %s" % f["description"][:110]))
+        return 0
+    if args.photo_cmd == "fetch":
+        info = photos.fetch(args.title, args.out, args.width)
+        print("OK %s" % args.out)
+        print(_ascii("   %s" % info["credit"]))
+        return 0
+    for line in photos.credits(args.folder):
+        print(_ascii(line))
     return 0
 
 

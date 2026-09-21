@@ -12,6 +12,8 @@ import json
 import shutil
 import subprocess
 
+from . import budget
+
 
 class MediaError(RuntimeError):
     """A media command failed. The message carries the command and ffmpeg's own words."""
@@ -28,7 +30,8 @@ def _require(binary):
 def run(cmd, cwd=None):
     """Run a command to completion. Returns stdout. Raises MediaError with stderr on failure."""
     _require(str(cmd[0]))
-    cmd = [str(c) for c in cmd]
+    budget.lower_priority()
+    cmd = budget.ffmpeg(cmd)
     p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
     if p.returncode != 0:
         raise MediaError(
@@ -47,7 +50,8 @@ def run_capture_stderr(cmd):
     check-that-fails-open shape this library refuses.
     """
     _require(str(cmd[0]))
-    cmd = [str(c) for c in cmd]
+    budget.lower_priority()
+    cmd = budget.ffmpeg(cmd)
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
         raise MediaError(
