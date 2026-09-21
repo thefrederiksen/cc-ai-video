@@ -12,6 +12,9 @@ ENCODE PROFILES differ because the PICTURE differs:
            audio track is mono. Anything faster is bytes spent on a still image.
   footage  Real recorded video. 30 fps and a much lower CRF, because motion at CRF 30 smears,
            and stereo because the source is stereo.
+  voice    A recorded voice with no picture - narration read to a script. 48 kHz mono, so it
+           drops straight under a video edit without a resample, and a high bitrate because
+           the voice IS the product.
   motion   Cut footage with a music bed under it. Like footage, but a lower CRF and a higher
            audio bitrate: a bed under speech is where compression artefacts are audible.
 
@@ -65,6 +68,15 @@ PROFILES = {
         "sample_rate": "44100",
         "channels": "2",
     },
+    "voice": {
+        "fps": 0,
+        "crf": None,
+        "preset": None,
+        "tune": None,
+        "audio_kbps": "192k",
+        "sample_rate": "48000",
+        "channels": "1",
+    },
     "motion": {
         "fps": 30,
         "crf": "19",
@@ -89,6 +101,11 @@ TARGETS = {
                          "loudness": None, "max_seconds": None},
     "tutorial-phone": {"size": "phone", "profile": "stills", "captions": "full",
                        "loudness": None, "max_seconds": None},
+    # A narration track: voice takes cut and joined, no picture. Written as .wav or .m4a with
+    # an .srt sidecar built from the same word timings as the cuts. The pictures go on
+    # afterwards, timed to it.
+    "narration": {"size": None, "profile": "voice", "captions": "full",
+                  "loudness": -16.0, "max_seconds": None, "audio_only": True},
 }
 
 
@@ -109,7 +126,8 @@ def target(name):
         raise SystemExit("unknown target %r - have %s" % (name, ", ".join(sorted(TARGETS))))
     row = dict(TARGETS[name])
     row["name"] = name
-    row["width"], row["height"] = size(row["size"])
+    row["width"], row["height"] = size(row["size"]) if row["size"] else (0, 0)
+    row["audio_only"] = bool(row.get("audio_only"))
     row["encode"] = profile(row["profile"])
     return row
 

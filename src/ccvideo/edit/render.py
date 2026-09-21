@@ -77,6 +77,11 @@ def render_clip(project, clip, index, out_path, target, level_db=-16.0, frame=No
         raise SystemExit(
             "%s carries no audio track, so nothing in it can be cut on a word boundary "
             "or heard back afterwards" % take["video"])
+    if not source["video"]:
+        raise SystemExit(
+            "take %s is a voice recording with no picture, so it cannot be fitted into a %s "
+            "frame. Render it with --target narration, and put the pictures on afterwards."
+            % (take["name"], target["name"]))
 
     pre, view_w, view_h = crop_filter(clip.get("crop"), source["width"], source["height"])
     video_filter = ("[0:v]" + pre
@@ -139,7 +144,7 @@ def timeline_cues(project, timeline, lengths, style_name, corrections=()):
 
 
 def render_timeline(project, out_path, target, captions="full", corrections=(), hook="",
-                    brand=None, footer=""):
+                    brand=None, footer="", gap=1.0):
     """Render the project's timeline. Returns the output path.
 
     With `hook`, the frame becomes the hook layout: the headline burned across the top from
@@ -150,6 +155,10 @@ def render_timeline(project, out_path, target, captions="full", corrections=(), 
         raise SystemExit(
             "this project's timeline is empty. Cut something into it first: "
             "ccvideo cut --project %s --keep \"...\"" % project.root)
+    if target.get("audio_only"):
+        if hook:
+            raise SystemExit("a hook is burned into the picture, and a narration has none")
+        return render_narration(project, out_path, target, captions, corrections, gap)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,3 +277,111 @@ def _finish(joined, out_path, target, total, ass, plate=None, box=None):
         + ["-filter_complex", stage + ";" + audio, "-map", "[v]", "-map", "[a]"]
         + targets.video_args(encode) + targets.audio_args(encode)
         + ["-t", "%.3f" % total, "-movflags", "+faststart", str(out_path)])
+
+
+# ---------------------------------------------------------------- narration (no picture)
+
+NARRATION_SUFFIXES = {".wav": ["-c:a", "pcm_s16le"], ".m4a": ["-c:a", "aac"]}
+
+
+def render_audio_clip(project, clip, out_path, target, level_db=-16.0,
+                      fade_in=True, fade_out=True):
+    """Cut one clip to a WAV piece: levelled on its own, faded at the joins only.
+
+    The same per-clip levelling as a video clip, for the same reason - takes recorded on
+    different days sit at different levels - and the same rule on fades: a fade hides the
+    click at a seam, and the first and last edges of the finished file are not seams.
+    """
+    take = project.take(clip["take"])
+    encode = target["encode"]
+    seconds = clip["end"] - clip["start"]
+    fade = min(targets.JOIN_FADE, seconds / 6.0)
+    chain = ["aresample=%s" % encode["sample_rate"],
+             "loudnorm=I=%.1f:TP=-1.5:LRA=11" % level_db]
+    if fade_in:
+        chain.append("afade=t=in:st=0:d=%.3f" % fade)
+    if fade_out:
+        chain.append("afade=t=out:st=%.3f:d=%.3f" % (max(seconds - fade, 0.0), fade))
+    run(["ffmpeg", "-y", "-loglevel", "error",
+         "-ss", "%.3f" % clip["start"], "-t", "%.3f" % seconds, "-i", str(take["video"]),
+         "-vn", "-af", ",".join(chain),
+         "-ar", encode["sample_rate"], "-ac", encode["channels"], "-c:a", "pcm_s16le",
+         "-t", "%.3f" % seconds, str(out_path)])
+    return duration(out_path)
+
+
+def silence_piece(out_path, seconds, encode):
+    layout = "mono" if encode["channels"] == "1" else "stereo"
+    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "anullsrc=r=%s:cl=%s" % (encode["sample_rate"], layout),
+         "-t", "%.3f" % seconds, "-c:a", "pcm_s16le", str(out_path)])
+    return duration(out_path)
+
+
+def render_narration(project, out_path, target, captions="full", corrections=(), gap=1.0):
+    """Join the timeline into one narration track, with no picture.
+
+    Clips from the SAME take are joined edge to edge - they are one reading with the outtakes
+    taken out. Where the take changes a new chapter starts, and `gap` seconds of silence go
+    between them: without it one chapter's last word runs straight into the next chapter's
+    first, which no reader does.
+    """
+    out_path = Path(out_path)
+    if out_path.suffix.lower() not in NARRATION_SUFFIXES:
+        raise SystemExit("a narration is written as %s, not %s"
+                         % (" or ".join(sorted(NARRATION_SUFFIXES)),
+                            out_path.suffix or "a file with no extension"))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    work = project.root / "build"
+    work.mkdir(parents=True, exist_ok=True)
+    encode = target["encode"]
+
+    pieces, lengths, owners = [], [], []
+    last = len(project.timeline) - 1
+    for i, clip in enumerate(project.timeline):
+        if i > 0 and gap > 0 and clip["take"] != project.timeline[i - 1]["take"]:
+            pause = work / ("gap-%03d.wav" % i)
+            pieces.append(pause)
+            lengths.append(silence_piece(pause, gap, encode))
+            owners.append(None)
+        piece = work / ("clip-%03d.wav" % i)
+        length = render_audio_clip(project, clip, piece, target,
+                                   fade_in=i > 0, fade_out=i < last)
+        pieces.append(piece)
+        lengths.append(length)
+        owners.append(clip)
+        print("  %03d  %-16s %6.2fs  %s" % (i, clip["take"], length, clip["text"][:60]),
+              flush=True)
+
+    listing = work / "concat.txt"
+    listing.write_text("".join("file '%s'\n" % p.as_posix() for p in pieces), encoding="utf-8")
+    joined = work / "joined.wav"
+    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+         "-i", str(listing), "-c", "copy", str(joined)])
+    total = duration(joined)
+
+    codec = list(NARRATION_SUFFIXES[out_path.suffix.lower()])
+    if out_path.suffix.lower() == ".m4a":
+        codec += ["-b:a", encode["audio_kbps"]]
+    level = []
+    if target["loudness"] is not None:
+        level = ["-af", "loudnorm=I=%.1f:TP=-1.5:LRA=11" % target["loudness"]]
+    run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(joined)] + level
+        + ["-ar", encode["sample_rate"], "-ac", encode["channels"]] + codec
+        + ["-t", "%.3f" % total, str(out_path)])
+
+    if captions not in ("", "none"):
+        # A silence piece carries no words; it only moves the clock on.
+        all_cues, at = [], 0.0
+        for clip, length in zip(owners, lengths):
+            if clip is not None:
+                cues, _ = timeline_cues(project, [clip], [length], "full", corrections)
+                for cue in cues:
+                    cue["start"] += at
+                    cue["end"] += at
+                all_cues.extend(cues)
+            at += length
+        subtitles.write_srt(all_cues, out_path.with_suffix(".srt"))
+        print("  %d cues, sidecar %s" % (len(all_cues), out_path.with_suffix(".srt").name))
+    print("  %.1fs narration" % total)
+    return out_path
