@@ -31,6 +31,8 @@ def main(argv=None):
     _add_edit(sub)
     _add_qa(sub)
     _add_sheet(sub)
+    _add_illustrate(sub)
+    _add_image(sub)
 
     args = parser.parse_args(argv)
     return args.run(args) or 0
@@ -236,6 +238,9 @@ def _add_edit(sub):
     p.add_argument("--brand", default="default", help="palette and product name for the hook")
     p.add_argument("--brands", default="")
     p.add_argument("--footer", default="", help="the line along the bottom of a hook layout")
+    p.add_argument("--gap", type=float, default=1.0,
+                   help="narration target only: seconds of silence where one take ends and "
+                        "the next begins - a new chapter")
     p.set_defaults(run=_render)
 
 
@@ -320,7 +325,7 @@ def _render(args):
     captions = args.captions or ("strip" if args.hook else target["captions"])
     out = render_timeline(project, Path(args.out).resolve(), target,
                           captions=captions, hook=args.hook, brand=brand,
-                          footer=args.footer)
+                          footer=args.footer, gap=args.gap)
     print("OK %s" % out)
     return 0
 
@@ -388,3 +393,49 @@ def _sheet(args):
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ------------------------------------------------------------------ illustrate
+
+def _add_illustrate(sub):
+    p = sub.add_parser("illustrate",
+                       help="animate a scene list over a recorded narration, word by word")
+    p.add_argument("--audio", required=True, help="the narration (ccvideo render --target narration)")
+    p.add_argument("--words", required=True, help="word timings of that narration (ccvideo transcribe)")
+    p.add_argument("--scenes", required=True, help="the scene list, anchored to spoken words")
+    p.add_argument("--out", required=True)
+    p.add_argument("--start", type=float, default=0.0, help="seconds into the narration")
+    p.add_argument("--end", type=float, required=True, help="seconds into the narration")
+    p.add_argument("--brand", default="devthrottle")
+    p.add_argument("--brands", default="")
+    p.add_argument("--workers", type=int, default=1,
+                   help="render in this many processes side by side; the result is identical")
+    p.set_defaults(run=_illustrate)
+
+
+def _illustrate(args):
+    from .illustrate import render as illus, scenes as scenelib
+    brand = brandlib.get(args.brand, args.brands or None)
+    scenes = scenelib.load(args.scenes, args.words, start=args.start, end=args.end)
+    for s in scenes:
+        print("  scene %6.2f - %6.2f  %d elements" % (s["t0"], s["t1"], len(s["elements"])))
+    out = illus.render(scenes, brand, args.audio, args.out, args.start, args.end,
+                       workers=args.workers)
+    print("OK %s" % out)
+    return 0
+
+
+# ------------------------------------------------------------------ image
+
+def _add_image(sub):
+    p = sub.add_parser("image", help="generate a scene image (moods and places, not real faces)")
+    p.add_argument("--prompt", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--size", default="1792x1024")
+    p.set_defaults(run=_image)
+
+
+def _image(args):
+    from .imagegen import generate
+    print("OK %s" % generate(args.prompt, args.out, args.size))
+    return 0

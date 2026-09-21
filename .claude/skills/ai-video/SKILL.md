@@ -114,6 +114,30 @@ and crop to it. The tool will not choose for you and should not.
 **Check the timeline before rendering.** `ccvideo timeline` shows exactly what will be cut and
 what each clip says.
 
+## ILLUSTRATE: pictures over a human narration
+
+For a long narration a person recorded (voice only). Stitch the takes with
+`ccvideo render --project P --target narration --out n.wav`, transcribe it, then draw pictures
+that arrive ON the words:
+
+```
+ccvideo illustrate --audio n.wav --words n.words.json --scenes scenes.json \
+                   --out video.mp4 --start 0 --end <seconds> --workers 20
+cc-secrets run deepinfra-api-key -- ccvideo image --prompt "..." --out img/x.png
+```
+
+A scene list is JSON: each scene and each element has an `at` that is a phrase the speaker
+says, quoted as the transcript has it (hyphenated words are split: "British born"). Anchors
+search forward from the scene start; a phrase that is not there stops the build. Elements:
+text, box, flow, bars, counter, ruler, stack, strike, chat, person, paper, image.
+
+* Generated images are for places and moods only. A real person gets a `person` card - never a
+  generated face.
+* Render a still of every scene before the full render, and LOOK at it. Overlaps and wrapped
+  lines are only visible there.
+* `--workers` splits the frames across processes; each encoder gets its share of the cores. A
+  28-minute video takes about 30 minutes on 24 cores.
+
 ## The gate - nothing ships without it
 
 ```

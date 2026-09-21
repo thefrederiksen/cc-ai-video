@@ -212,11 +212,18 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
 
     # RENDER - the right shape, and it carries its audio.
     problems = []
-    if not shape["video"]:
+    audio_only = bool(target and target.get("audio_only"))
+    if audio_only and shape["video"]:
+        problems.append("a picture in a %s file, which should carry the voice only"
+                        % target["name"])
+    if not audio_only and not shape["video"]:
         problems.append("no video stream")
     if not shape["audio"]:
         problems.append("NO AUDIO")
-    if target:
+    if audio_only:
+        record("RENDER", not problems,
+               "; ".join(problems) or "voice only, %.1fs, audio present" % shape["duration"])
+    elif target:
         if (shape["width"], shape["height"]) != (target["width"], target["height"]):
             problems.append("size %dx%d, %s wants %dx%d"
                             % (shape["width"], shape["height"], target["name"],
@@ -224,9 +231,10 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
         if target["max_seconds"] and shape["duration"] > target["max_seconds"]:
             problems.append("%.1fs over the %s limit of %.0fs"
                             % (shape["duration"], target["name"], target["max_seconds"]))
-    record("RENDER", not problems,
-           "; ".join(problems) or "%dx%d %.1fs %.0f fps, audio present"
-           % (shape["width"], shape["height"], shape["duration"], shape["fps"]))
+    if not audio_only:
+        record("RENDER", not problems,
+               "; ".join(problems) or "%dx%d %.1fs %.0f fps, audio present"
+               % (shape["width"], shape["height"], shape["duration"], shape["fps"]))
 
     # DRIFT - the audio and video run for the same length.
     if shape["audio_duration"] is not None:

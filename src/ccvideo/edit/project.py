@@ -93,15 +93,21 @@ class Project:
         if any(t["name"] == name for t in self.takes):
             raise SystemExit("this project already has a take called %r" % name)
 
-        words_file = transcribe(video, out_dir=self.root / "words", model_name=model)
+        # One folder per take. Words files are named after the media file, and recorders name
+        # every take the same (recording.mp4, audio.wav), so a shared folder handed every take
+        # after the first the FIRST take's words - silently, because a cached words file is
+        # reused rather than rebuilt.
+        words_file = transcribe(video, out_dir=self.root / "words" / name, model_name=model)
         document = wordlib.load(words_file)
+        shape = probe(video)
         take = {
             "name": name,
             "source": str(source),
             "source_kind": kind,
             "video": str(video),
             "words": str(words_file.relative_to(self.root)),
-            "duration": probe(video)["duration"],
+            "duration": shape["duration"],
+            "audio_only": not shape["video"],
             "word_count": len(wordlib.all_words(document)),
         }
         self.takes.append(take)
@@ -296,11 +302,20 @@ def _word_gaps(words, start, end):
 
 # ---------------------------------------------------------------- sources
 
+VIDEO_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm", ".m4v")
+# A voice take with no picture: narration read to a script, a podcast answer. It can be cut on
+# word boundaries like any take, and rendered to the narration target. It cannot be rendered
+# to a video target, because there is no picture in it to fit into a frame.
+AUDIO_SUFFIXES = (".wav", ".mp3", ".m4a", ".flac", ".aac", ".ogg")
+
+
 def resolve_source(source):
-    """(video path, kind) for anything that can be imported.
+    """(media path, kind) for anything that can be imported.
 
     Two kinds, and the second is a plain file so that a phone clip, a downloaded talk or
     anything else a person drops in works without being wrapped in a fake recording directory.
+    A recording directory holding no video but an `audio.wav` is an audio-only recording
+    (AgentEyes writes one in its audio mode), and imports as a voice take.
     """
     path = Path(source)
     if not path.exists():
@@ -308,8 +323,9 @@ def resolve_source(source):
     if path.is_dir():
         video = path / "recording.mp4"
         if not video.exists():
-            candidates = sorted(p for p in path.iterdir()
-                                if p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"))
+            candidates = sorted(p for p in path.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES)
+            if not candidates and (path / "audio.wav").exists():
+                return path / "audio.wav", "recording-dir"
             if len(candidates) != 1:
                 raise SystemExit(
                     "%s is a directory with no recording.mp4 and %d other video files - "
@@ -317,8 +333,8 @@ def resolve_source(source):
                     % (path, len(candidates)))
             video = candidates[0]
         return video, "recording-dir"
-    if path.suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm", ".m4v"):
-        raise SystemExit("%s does not look like a video file" % path)
+    if path.suffix.lower() not in VIDEO_SUFFIXES + AUDIO_SUFFIXES:
+        raise SystemExit("%s does not look like a video or audio file" % path)
     return path, "file"
 
 
