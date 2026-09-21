@@ -14,6 +14,8 @@ dependencies = [
     # Word timings. The whole library cuts on real word boundaries, so this is not optional:
     # there is no estimate-based path to fall back to.
     "faster-whisper>=1.0,<2",
+    # Frame arithmetic in the illustrated renderer and the picture score.
+    "numpy>=1.24",
 ]
 
 [project.scripts]

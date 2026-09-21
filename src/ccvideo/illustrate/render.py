@@ -44,7 +44,11 @@ THEMES = {
     },
 }
 
-FONT_FILES = {"head": "seguibl.ttf", "label": "seguisb.ttf", "mono": "CascadiaMono.ttf"}
+# Open fonts shipped inside the package (SIL Open Font License, licenses beside them), so a
+# video renders to the same pixels on Windows, macOS and Linux. The first videos used Windows'
+# own Segoe UI, which cannot be copied to another machine and does not exist off Windows.
+FONT_DIR = Path(__file__).resolve().parent.parent / "fonts"
+FONT_FILES = {"head": "Inter-Black.ttf", "label": "Inter-SemiBold.ttf", "mono": "CascadiaMono-Regular.ttf"}
 
 
 def _mix(a, b, k):
@@ -93,9 +97,9 @@ class Canvas:
     def font(self, size, kind="head"):
         key = (size, kind)
         if key not in self.fonts:
-            path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", FONT_FILES[kind])
-            if not os.path.exists(path):
-                raise SystemExit("font %s is missing (%s) - the illustrate step needs it"
+            path = FONT_DIR / FONT_FILES[kind]
+            if not path.exists():
+                raise SystemExit("font %s is missing from the package (%s) - reinstall ccvideo"
                                  % (FONT_FILES[kind], path))
             self.fonts[key] = ImageFont.truetype(path, size)
         return self.fonts[key]
@@ -558,7 +562,9 @@ class Canvas:
         ox = (src.width - cw) * el.get("pan_x", 0.5)
         oy = (src.height - ch) * el.get("pan_y", 0.5)
         frame = src.crop((int(ox), int(oy), int(ox + cw), int(oy + ch))).resize((W, H), Image.BILINEAR)
-        frame = Image.fromarray((np.asarray(frame, dtype=np.float32) * _scrim()).astype(np.uint8))
+        # `dim` darkens a bright photograph further, for type that must read over a white facade.
+        frame = Image.fromarray((np.asarray(frame, dtype=np.float32) * _scrim() * el.get("dim", 1.0))
+                                .astype(np.uint8))
         img.paste(Image.blend(img, frame, alpha * k))
         if el.get("caption") and t >= el.get("caption_t", el["t_in"] + 0.8):
             kc = progress(t, el.get("caption_t", el["t_in"] + 0.8), 0.4)
