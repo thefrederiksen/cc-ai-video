@@ -13,6 +13,8 @@ Both halves finish at the same QA gate.
 """
 
 import argparse
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -243,6 +245,9 @@ def _add_edit(sub):
     p.add_argument("--brand", default="default", help="palette and product name for the hook")
     p.add_argument("--brands", default="")
     p.add_argument("--footer", default="", help="the line along the bottom of a hook layout")
+    p.add_argument("--corrections", default="",
+                   help="JSON file of [pattern, replacement] pairs applied to the captions - "
+                        "the spellings a transcriber gets wrong (\"chat TBT\" -> ChatGPT)")
     p.add_argument("--gap", type=float, default=1.0,
                    help="narration target only: seconds of silence where one take ends and "
                         "the next begins - a new chapter")
@@ -321,6 +326,37 @@ def _timeline(args):
     return 0
 
 
+def load_corrections(path):
+    """Caption corrections from a JSON file: a list of [pattern, replacement] pairs.
+
+    Captions are the one place a viewer reads a name, and a transcriber mishears names
+    ("chat TBT", "Rose and Blatt"). Every pair is checked before anything renders: a pattern
+    that is not a valid regular expression, or an entry that is not a pair, stops the render
+    rather than being skipped, because a skipped correction burns the misspelling in."""
+    path = Path(path)
+    if not path.exists():
+        raise SystemExit("no corrections file at %s" % path)
+    try:
+        pairs = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise SystemExit("%s is not JSON: %s" % (path, e))
+    if not isinstance(pairs, list):
+        raise SystemExit("%s must hold a list of [pattern, replacement] pairs" % path)
+    out = []
+    for n, pair in enumerate(pairs):
+        if not (isinstance(pair, list) and len(pair) == 2
+                and all(isinstance(x, str) for x in pair)):
+            raise SystemExit("%s entry %d is not a [pattern, replacement] pair: %r"
+                             % (path, n, pair))
+        try:
+            re.compile(pair[0])
+        except re.error as e:
+            raise SystemExit("%s entry %d: %r is not a valid pattern: %s"
+                             % (path, n, pair[0], e))
+        out.append((pair[0], pair[1]))
+    return out
+
+
 def _render(args):
     from .edit.project import Project
     from .edit.render import render_timeline
@@ -328,9 +364,10 @@ def _render(args):
     target = targets.target(args.target)
     brand = brandlib.get(args.brand, args.brands or None) if args.hook else None
     captions = args.captions or ("strip" if args.hook else target["captions"])
+    corrections = load_corrections(args.corrections) if args.corrections else ()
     out = render_timeline(project, Path(args.out).resolve(), target,
-                          captions=captions, hook=args.hook, brand=brand,
-                          footer=args.footer, gap=args.gap)
+                          captions=captions, corrections=corrections, hook=args.hook,
+                          brand=brand, footer=args.footer, gap=args.gap)
     print("OK %s" % out)
     return 0
 
