@@ -111,6 +111,11 @@ and its interface text is illegible on a phone. The renderer prints a blow-up fa
 and warns under x0.80. When it does, look at a frame, decide which panel carries the meaning,
 and crop to it. The tool will not choose for you and should not.
 
+**Fix the names in the captions.** A transcriber mishears names ("chat TBT", "Rose and
+Blatt"), and a burned caption is where the viewer reads them. `render --corrections fix.json`
+takes a list of `[pattern, replacement]` pairs (case-insensitive regular expressions) and applies
+them to what reaches the screen. A bad entry stops the render instead of being skipped.
+
 **Check the timeline before rendering.** `ccvideo timeline` shows exactly what will be cut and
 what each clip says.
 
