@@ -120,3 +120,12 @@ def test_japanese_is_estimated_by_character_not_by_word():
     by_word = len(japanese.split()) / 150.0 * 60.0
     assert by_word < 1.0, "there are no spaces to count"
     assert scriptlib.speech_seconds(japanese, 150.0) > 60
+
+
+def test_the_lint_command_runs_end_to_end(tmp_path, capsys):
+    # `ccvideo lint` once crashed on every call (an argument meant for `qa` was passed to it),
+    # and only the library function was tested. Drive the real command.
+    from ccvideo.cli import main
+    path, shots = write(tmp_path, GOOD)
+    assert main(["lint", "--script", str(path), "--shots", shots, "--brand", "default"]) == 0
+    assert "nothing to report" in capsys.readouterr().out
