@@ -158,8 +158,7 @@ def _lint(args):
     doc = scriptlib.parse(Path(args.script).resolve())
     problems = scriptlib.lint(doc, str(Path(args.shots).resolve()), brand,
                               card_advice=args.card_advice, publish=args.publish,
-                              words_policy=args.words_policy,
-                         fade=args.fade)
+                              words_policy=args.words_policy)
     if not problems:
         print("OK %s: %d segments, nothing to report" % (args.script, len(doc.segments)))
         return 0
