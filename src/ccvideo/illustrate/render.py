@@ -120,6 +120,8 @@ class Canvas:
     # ------------------------------------------------------------------ helpers
 
     def c(self, p, name, a=1.0):
+        if isinstance(name, list):      # an RGB colour read back from a JSON scene list
+            name = tuple(name)
         return _mix(p["bg"], p.get(name, name if isinstance(name, tuple) else p["text"]), a)
 
     def icon(self, d, kind, cx, cy, s, colour, bg):
@@ -260,7 +262,9 @@ class Canvas:
         x0, y0, x1, y1 = cx - w * grow / 2, cy - h * grow / 2, cx + w * grow / 2, cy + h * grow / 2
         style = el.get("style", "solid")
         if "lit_t" in el and t >= el["lit_t"]:
-            style = "accent"
+            style = el.get("lit_style", "accent")
+            if style == "colour" and "lit_fill" in el:
+                el = dict(el, fill=el["lit_fill"])
         radius = el.get("radius", 10)
         text_colour = "card_text"
         if style == "dashed":
@@ -273,6 +277,19 @@ class Canvas:
         elif style == "warm":
             d.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=self.c(p, "warm", a))
             text_colour = (14, 16, 20)
+        elif style == "ring":
+            # Outline only, in the warm marker colour: points at part of a real screenshot
+            # without covering it.
+            d.rounded_rectangle((x0, y0, x1, y1), radius=radius, outline=self.c(p, "warm", a),
+                                width=el.get("width", 6))
+        elif style == "colour":
+            # A box in a colour the narration names - "blue means working, red means it needs
+            # you" - which no theme colour can stand in for. `fill`, optional `outline` and
+            # `text_colour` are RGB lists.
+            fill = tuple(el["fill"])
+            d.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=_mix(p["bg"], fill, a),
+                                outline=_mix(p["bg"], tuple(el.get("outline", fill)), a), width=3)
+            text_colour = tuple(el.get("text_colour", (255, 255, 255)))
         else:
             d.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=self.c(p, "panel", a),
                                 outline=self.c(p, "rule", a), width=2)
@@ -283,7 +300,7 @@ class Canvas:
         if icon:
             s = min(h * 0.55, 56)
             ib = (tx, cy - s / 2, tx + s, cy + s / 2)
-            chip = style in ("accent", "warm")
+            chip = style in ("accent", "warm", "colour")
             d.rounded_rectangle(ib, radius=6, fill=(255, 255, 255) if not chip else self.c(p, "bg", a * .25))
             self.icon(d, icon, tx + s / 2, cy, s * 0.9, (14, 16, 20) if not chip else (255, 255, 255), p["bg"])
             tx += s + 20
