@@ -40,6 +40,7 @@ def main(argv=None):
     _add_photo(sub)
     _add_score(sub)
     _add_illustrate_check(sub)
+    _add_capture(sub)
 
     args = parser.parse_args(argv)
     return args.run(args) or 0
@@ -463,6 +464,33 @@ def _illustrate(args):
         print("  scene %6.2f - %6.2f  %d elements" % (s["t0"], s["t1"], len(s["elements"])))
     out = illus.render(scenes, brand, args.audio, args.out, args.start, args.end,
                        workers=args.workers)
+    print("OK %s" % out)
+    return 0
+
+
+def _add_capture(sub):
+    p = sub.add_parser("capture",
+                       help="record an animated HTML page frame by frame under a narration")
+    p.add_argument("page", help="an HTML page that defines window.ccvideoFrame(t)")
+    p.add_argument("--audio", required=True, help="the narration")
+    p.add_argument("--out", required=True)
+    p.add_argument("--start", type=float, default=0.0, help="seconds into the narration")
+    p.add_argument("--end", type=float, required=True, help="seconds into the narration")
+    p.add_argument("--target", default="shorts",
+                   help="where it is going: sets the frame size and the loudness (shorts, youtube, ...)")
+    p.add_argument("--fps", type=int, default=30)
+    p.set_defaults(run=_capture)
+
+
+def _capture(args):
+    from .capture import capture
+    target = targets.target(args.target)
+    out = capture(args.page, args.audio, args.out, args.start, args.end, target["width"],
+                  target["height"], args.fps)
+    if target["loudness"] is not None:
+        from .generate.assemble import normalise_loudness
+        normalise_loudness(out, target["loudness"], target["encode"])
+        print("  levelled to %.1f LUFS" % target["loudness"])
     print("OK %s" % out)
     return 0
 

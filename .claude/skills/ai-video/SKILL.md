@@ -164,6 +164,22 @@ has NOTHING MOVING (6 s or more), with the time and the scene. **Read
 `docs/illustrate-lessons.md` before building the next illustrated video** - the whole pipeline
 and every lesson from the first one.
 
+## CAPTURE: an animated web page under a narration
+
+When the picture is easier to draw in a browser (an interactive SVG figure, an Anatomy machine,
+a chart), make the page define `window.ccvideoFrame(t)`, which poses everything for `t` seconds.
+The recorder sets each frame's time itself and screenshots it in headless Chromium, so a slow
+frame is slow to capture, never late on screen.
+
+```
+ccvideo capture page.html --audio narration.mp4 --out short.mp4 --end <s> --target shorts
+```
+
+`--target` sets the frame size and levels the loudness the same way every other target does.
+Key the page's animation to the narration's word timings (`ccvideo transcribe`), never to
+guessed seconds. About 0.3 s a frame: a 56 s Short took 9 minutes. First used for the
+software factory Short (devthrottle_internal `marketing/tutorials/video/factory-short/`).
+
 ## The gate - nothing ships without it
 
 ```
