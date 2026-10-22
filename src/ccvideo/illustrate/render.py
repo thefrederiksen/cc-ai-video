@@ -88,10 +88,82 @@ def _scrim():
     return _SCRIM[0]
 
 
+CLIP_ENTER = 0.5   # seconds a clip takes to fade in
+
+
+def clip_cache():
+    """Where clips are cut into frames: CCVIDEO_CACHE, else ~/.cache/ccvideo."""
+    root = os.environ.get("CCVIDEO_CACHE") or str(Path.home() / ".cache" / "ccvideo")
+    return Path(root) / "clips"
+
+
+def clip_dir(el):
+    """The frame folder for one clip element. Keyed on the file, its size and time, and every
+    setting that changes the frames, so editing the source or the element never reuses stale
+    frames."""
+    import hashlib
+    src = Path(el["path"]).resolve()
+    st = src.stat()
+    key = "|".join(str(v) for v in (src, st.st_size, int(st.st_mtime), el.get("clip_start", 0.0),
+                                    el.get("speed", 1.0), W, H, FPS))
+    return clip_cache() / hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _clip_seconds(el, scene):
+    """How long the clip is on screen: from its word until it leaves or the scene ends."""
+    return min(el.get("t_out", scene["t1"]) + LEAVE, scene["t1"]) - el["t_in"]
+
+
+def prepare_clips(scenes):
+    """Cut every clip in the scene list into numbered frames at the video's size and rate, once.
+
+    Run BEFORE any frame is drawn and before worker processes start, so no two workers ever cut
+    the same clip. A frame is then read by number, so any worker can draw any frame - the split
+    across processes stays exact. A clip shorter than its time on screen stops the build: a clip
+    that froze or looped where the narration did not would look like a fault."""
+    for n, scene in enumerate(scenes):
+        for el in scene["elements"]:
+            if el["type"] != "clip":
+                continue
+            src = Path(el["path"])
+            if not src.exists():
+                raise SystemExit("clip %s does not exist (scene %d)" % (src, n))
+            folder = clip_dir(el)
+            done = folder / "frames.txt"
+            if not done.exists():
+                folder.mkdir(parents=True, exist_ok=True)
+                for old in folder.glob("*.jpg"):
+                    old.unlink()
+                speed = float(el.get("speed", 1.0))
+                cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.3f" % el.get("clip_start", 0.0),
+                       "-i", str(src), "-an",
+                       "-vf", "setpts=PTS/%g,fps=%d,scale=%d:%d:force_original_aspect_ratio=increase:"
+                              "flags=lanczos,crop=%d:%d" % (speed, FPS, W, H, W, H),
+                       "-q:v", "2", str(folder / "%05d.jpg")]
+                print("  cutting clip %s into frames" % src.name, flush=True)
+                if subprocess.run(budget.ffmpeg(cmd)).returncode != 0:
+                    raise SystemExit("ffmpeg could not cut clip %s into frames" % src)
+                count = len(list(folder.glob("*.jpg")))
+                if count == 0:
+                    raise SystemExit("clip %s gave no frames from %.2fs" % (src, el.get("clip_start", 0.0)))
+                done.write_text(str(count), encoding="utf-8")
+            count = int(done.read_text(encoding="utf-8"))
+            need = _clip_seconds(el, scene)
+            if count < int(math.ceil(need * FPS)):
+                raise SystemExit(
+                    "clip %s gives %.2fs from %.2fs at speed %g, but scene %d keeps it on screen "
+                    "for %.2fs - pick a longer clip, an earlier clip_start or a lower speed"
+                    % (src.name, count / float(FPS), el.get("clip_start", 0.0),
+                       el.get("speed", 1.0), n, need))
+            el["clip_frames"] = str(folder)
+            el["clip_count"] = count
+
+
 class Canvas:
     def __init__(self, brand=None):
         self.fonts = {}
         self.images = {}
+        self.clip_last = {}
         self.bases = {name: self._background(p) for name, p in THEMES.items()}
 
     def font(self, size, kind="head"):
@@ -301,8 +373,11 @@ class Canvas:
             s = min(h * 0.55, 56)
             ib = (tx, cy - s / 2, tx + s, cy + s / 2)
             chip = style in ("accent", "warm", "colour")
-            d.rounded_rectangle(ib, radius=6, fill=(255, 255, 255) if not chip else self.c(p, "bg", a * .25))
-            self.icon(d, icon, tx + s / 2, cy, s * 0.9, (14, 16, 20) if not chip else (255, 255, 255), p["bg"])
+            # The chip and its mark fade with the box: drawn at full strength, they stayed bright
+            # while the label faded out and flashed as floating ticks at every scene change.
+            d.rounded_rectangle(ib, radius=6, fill=_mix(p["bg"], (255, 255, 255), a) if not chip else self.c(p, "bg", a * .25))
+            self.icon(d, icon, tx + s / 2, cy, s * 0.9,
+                      _mix(p["bg"], (14, 16, 20), a) if not chip else _mix(p["bg"], (255, 255, 255), a), p["bg"])
             tx += s + 20
         label = el.get("text")
         if label:
@@ -599,6 +674,63 @@ class Canvas:
             tw = d.textlength(credit, font=f)
             d.text((W - 90 - tw, H - 52), credit, font=f, fill=_mix((0, 0, 0), (200, 206, 210), alpha))
 
+    def clip_frame(self, el, t):
+        """The clip's own frame for narration time t, as an image at the video's size."""
+        if "clip_frames" not in el:
+            raise SystemExit("clip %s was not prepared - call prepare_clips(scenes) first" % el["path"])
+        n = min(el["clip_count"] - 1, max(0, int((t - el["t_in"]) * FPS)))
+        last = self.clip_last.get(el["clip_frames"])
+        if last and last[0] == n:
+            return last[1]
+        frame = Image.open(Path(el["clip_frames"]) / ("%05d.jpg" % (n + 1))).convert("RGB")
+        self.clip_last[el["clip_frames"]] = (n, frame)
+        return frame
+
+    def clip(self, img, d, p, el, t, alpha, scene=None):
+        """Stock footage, moving. Full screen behind the words by default (darkened where the
+        words sit, like an image backdrop); with x, y, w, h it plays in a frame like a photo."""
+        k = progress(t, el["t_in"], CLIP_ENTER)
+        if k <= 0:
+            return
+        src = self.clip_frame(el, t)
+        if "w" in el:
+            raw = (t - el["t_in"]) / 0.5
+            kk = back(raw)
+            a = alpha * min(1.0, raw * 1.6)
+            x, y, w, h = el["x"], el["y"] + (1 - kk) * 50, int(el["w"]), int(el["h"])
+            pad = 10
+            d.rounded_rectangle((x - pad, y - pad, x + w + pad, y + h + pad), radius=14,
+                                fill=self.c(p, "panel", a), outline=self.c(p, "rule", a), width=2)
+            scale = max(w / W, h / H)
+            big = src.resize((max(w, int(W * scale + 0.5)), max(h, int(H * scale + 0.5))), Image.BILINEAR)
+            ox = (big.width - w) // 2
+            oy = int((big.height - h) * el.get("focus_y", 0.5))
+            pic = big.crop((ox, oy, ox + w, oy + h))
+            if el.get("dim", 1.0) != 1.0:
+                pic = Image.fromarray((np.asarray(pic, dtype=np.float32) * el["dim"]).astype(np.uint8))
+            self.paste(img, pic, x, y, a, radius=8)
+            d = ImageDraw.Draw(img)
+            label = el.get("caption")
+            if label:
+                f = self.font(30, "mono")
+                tw = d.textlength(label, font=f)
+                d.rectangle((x + 16, y + h - 58, x + 16 + tw + 28, y + h - 14), fill=_mix(p["bg"], (10, 12, 16), a))
+                d.text((x + 30, y + h - 54), label, font=f, fill=_mix(p["bg"], (236, 240, 242), a))
+            return
+        span = max(0.1, scene["t1"] - el["t_in"])
+        # `scale` frames the footage tighter from the first frame; with pan_x / pan_y it moves the
+        # subject to one side so the words beside it do not land on a face.
+        z = el.get("scale", 1.0) + el.get("zoom", 0.04) * min(1.0, (t - el["t_in"]) / span)
+        if z > 1.001:
+            cw, ch = W / z, H / z
+            ox = (W - cw) * el.get("pan_x", 0.5)
+            oy = (H - ch) * el.get("pan_y", 0.5)
+            src = src.crop((int(ox), int(oy), int(ox + cw), int(oy + ch))).resize((W, H), Image.BILINEAR)
+        arr = np.asarray(src, dtype=np.float32) * el.get("dim", 1.0)
+        if el.get("scrim", True):
+            arr = arr * _scrim()
+        img.paste(Image.blend(img, Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)), alpha * k))
+
     # ------------------------------------------------------------------ frame
 
     def frame(self, scenes, t):
@@ -624,6 +756,12 @@ class Canvas:
                 self.image(img, d, p, el, t, a, scene)
                 d = ImageDraw.Draw(img)
                 has_image = True
+            elif el["type"] == "clip":
+                self.clip(img, d, p, el, t, a, scene)
+                d = ImageDraw.Draw(img)
+                # A full-screen clip moves by itself; pushing the frame in on top of it as well
+                # would scale the footage twice.
+                has_image = has_image or "w" not in el
             else:
                 getattr(self, el["type"])(img, d, p, el, t, a)
         if not has_image:
@@ -652,7 +790,9 @@ def _encode_chunk(job):
     canvas = Canvas()
     cmd = ["ffmpeg", "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H), "-r", str(fps), "-i", "-",
-           "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+           # Near-lossless: these parts are an intermediate. Every later step (captions, the
+           # platform) encodes again, and CRF 18 here was the first of three lossy passes.
+           "-c:v", "libx264", "-preset", "medium", "-crf", "10", "-pix_fmt", "yuv420p",
            "-threads", str(threads), str(path)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     try:
@@ -689,6 +829,7 @@ def render(scenes, brand, audio, out, start, end, fps=FPS, workers=1):
     work = out.parent / (out.stem + ".parts")
     work.mkdir(exist_ok=True)
     budget.lower_priority()
+    prepare_clips(scenes)
     workers = budget.workers(min(workers, frames // (fps * 2) or 1))
     bounds = [frames * n // workers for n in range(workers + 1)]
     # Each encoder gets its share of the HALF of the cores this library may use. Left to itself
@@ -749,6 +890,7 @@ def sample(scenes, start, end, workers=1):
     from ..qa import picture
     times = [start + i / float(picture.RATE) for i in range(int((end - start) * picture.RATE))]
     budget.lower_priority()
+    prepare_clips(scenes)
     workers = budget.workers(min(workers, len(times) // 50 or 1))
     bounds = [len(times) * n // workers for n in range(workers + 1)]
     jobs = [(scenes, times[bounds[n]:bounds[n + 1]]) for n in range(workers)]

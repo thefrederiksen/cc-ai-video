@@ -134,7 +134,7 @@ class Project:
 
     # ---------------------------------------------------------------- cutting
 
-    def cut(self, take=None, keep=(), windows=(), append=False, crop=None):
+    def cut(self, take=None, keep=(), windows=(), append=False, crop=None, hold=0.0):
         """Add clips to the timeline by naming what to keep.
 
         `keep` is text the speaker actually said; `windows` are "start-end" seconds. Both go
@@ -166,7 +166,8 @@ class Project:
         quiet = detect_silence(row["video"])
         clips = []
         for start, end in requested:
-            s, e, notes = snap(words, start, end)
+            s, e, notes = snap(words, start, end, hold=hold)
+            e = min(e, limit)
             notes = list(notes) + edge_notes(words, quiet, s, e)
             clips.append({
                 "take": row["name"],

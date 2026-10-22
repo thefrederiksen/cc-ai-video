@@ -20,7 +20,7 @@ and the QA gate - must be able to see the difference. Nothing here guesses silen
 from .. import words as wordlib
 
 
-def snap(words, start, end, reach=4.0, pad=0.25, max_len=None, min_len=0.5):
+def snap(words, start, end, reach=4.0, pad=0.25, max_len=None, min_len=0.5, hold=0.0):
     """Snap [start, end] onto boundaries in `words`. See the module docstring.
 
     `min_len` exists only to stop a degenerate window where the end snaps back behind the
@@ -71,7 +71,14 @@ def snap(words, start, end, reach=4.0, pad=0.25, max_len=None, min_len=0.5):
     s_word, e_word = s, e
     s = max(0.0, s_word - pad, previous_end + 0.05) if first > 0 else max(0.0, s_word - pad)
     s = min(s, s_word)
-    e = max(e_word, min(e_word + pad, next_start - 0.05))
+    # `hold` keeps that much silence after the LAST word instead of `pad`, for a cut that must
+    # end on a held picture - a contact card, a closing frame. A transcriber ends a word early
+    # (it put "zero" 0.3s before the voice stopped), so `pad` alone landed the fade on the tail
+    # of the final word and left the closing card on screen for no time at all. Like `pad`, it
+    # stops short of the next word and never reaches into speech.
+    e = max(e_word, min(e_word + max(pad, hold), next_start - 0.05))
+    if hold:
+        notes.append("end held %.2fs past the last word" % (e - e_word))
 
     if max_len and e - s > max_len:
         notes.append("window %.1fs exceeds the %.0fs limit for this target after snapping"

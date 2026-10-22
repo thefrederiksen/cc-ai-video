@@ -46,6 +46,11 @@ JOIN_FADE = 0.07
 
 SIZES = {
     "desktop": (1920, 1080),
+    # 4K, for YouTube. YouTube picks its streaming bitrate partly by the UPLOAD's resolution: a
+    # 1080p upload of flat dark graphics was served at 450-850 kbps at 1080p and looked soft on
+    # a desktop. The same picture uploaded at 2160p is given YouTube's higher tier, which a
+    # viewer sees even when watching at 1080p.
+    "uhd": (3840, 2160),
     "phone": (1080, 1920),
 }
 
@@ -66,6 +71,17 @@ PROFILES = {
         "tune": None,
         "audio_kbps": "160k",
         "sample_rate": "44100",
+        "channels": "2",
+    },
+    # A master for YouTube: it re-encodes everything, so what we hand it should lose nothing
+    # it can see. CRF 20 on dark gradients with glow gave visible banding and 1.3 Mbps.
+    "master": {
+        "fps": 30,
+        "crf": "14",
+        "preset": "slow",
+        "tune": None,
+        "audio_kbps": "192k",
+        "sample_rate": "48000",
         "channels": "2",
     },
     "voice": {
@@ -92,6 +108,8 @@ PROFILES = {
 TARGETS = {
     "youtube": {"size": "desktop", "profile": "footage", "captions": "full",
                 "loudness": -14.0, "max_seconds": None},
+    "youtube-uhd": {"size": "uhd", "profile": "master", "captions": "full",
+                    "loudness": -14.0, "max_seconds": None},
     "shorts": {"size": "phone", "profile": "footage", "captions": "centre",
                "loudness": -14.0, "max_seconds": 60.0},
     "linkedin": {"size": "phone", "profile": "footage", "captions": "strip",
