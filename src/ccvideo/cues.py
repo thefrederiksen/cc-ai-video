@@ -36,6 +36,9 @@ STYLES = {
              "emphasis": False, "break_on_punctuation": False},
 }
 
+# Seconds of silence between two words that always end a cue.
+PAUSE_BREAK = 0.8
+
 # Words that open a clause: a good place to break a long line, and a bad place to end one.
 SOFT_BREAK = {"and", "but", "so", "because", "which", "then", "when", "if", "or", "while"}
 
@@ -99,6 +102,11 @@ def build(words, style_name="centre", emphasis=(), colour=None, offset=0.0, kind
     for i, word in enumerate(words):
         if not word["word"]:
             continue
+        # A cue never runs across a pause. Shown early, it puts the NEXT line on screen over
+        # the silence before it: "CONTRACT, NEW PRODUCT," sat up 2.5 s before "new" was said,
+        # spoiling the beat the speaker left before his close.
+        if current and word["start"] - current[-1]["end"] > PAUSE_BREAK:
+            flush()
         prospective = len(" ".join(
             (fix(w["word"]).upper() if spec["upper"] else fix(w["word"]))
             for w in current + [word]))

@@ -47,7 +47,7 @@ def fit_filter(source_w, source_h, width, height, blur_fill=True):
     source_aspect = source_w / float(source_h)
     target_aspect = width / float(height)
     if abs(source_aspect - target_aspect) < 0.01 or not blur_fill:
-        return ("scale=%d:%d:force_original_aspect_ratio=decrease,"
+        return ("scale=%d:%d:force_original_aspect_ratio=decrease:flags=lanczos,"
                 "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
                 % (width, height, width, height))
     return (
@@ -143,8 +143,31 @@ def timeline_cues(project, timeline, lengths, style_name, corrections=()):
     return all_cues, at
 
 
+def caption_baseline(height, captions, plate=False, position=""):
+    """Where the burned captions sit. `position="bottom"` puts any style along the foot of the
+    frame: an illustrated video draws its own pictures and text over the middle, and centre
+    captions there land on top of them. The big two-to-four-word style is still the most
+    readable on a muted phone, so it moves down rather than being swapped for the small strip."""
+    if position not in ("", "bottom"):
+        raise SystemExit("--caption-position is 'bottom' or left out, not %r" % position)
+    if position == "bottom":
+        return int(height * 0.95)
+    if plate:
+        from .. import layout
+        return layout.caption_baseline(height)
+    if captions == "centre":
+        return int(height * 0.555)
+    return int(height * 0.86)
+
+
+def caption_size(height, captions):
+    """Caption type size in pixels. The sizes were chosen on a 1080-line frame; a 4K frame
+    needs twice the pixels for the same caption, or it burns in at half the size."""
+    return int(round((80 if captions == "centre" else 56) * height / 1080.0))
+
+
 def render_timeline(project, out_path, target, captions="full", corrections=(), hook="",
-                    brand=None, footer="", gap=1.0):
+                    brand=None, footer="", gap=1.0, caption_position=""):
     """Render the project's timeline. Returns the output path.
 
     With `hook`, the frame becomes the hook layout: the headline burned across the top from
@@ -224,16 +247,10 @@ def render_timeline(project, out_path, target, captions="full", corrections=(), 
         for cue in dropped:
             print("  dropped an unreadable fragment at %.2fs: %r"
                   % (cue["start"], cue["plain"]), flush=True)
-        if plate:
-            from .. import layout
-            baseline = layout.caption_baseline(target["height"])
-        elif captions == "centre":
-            baseline = int(target["height"] * 0.555)
-        else:
-            baseline = int(target["height"] * 0.86)
+        baseline = caption_baseline(target["height"], captions, plate, caption_position)
         ass = subtitles.write_ass(cues, work / "captions.ass",
                                   target["width"], target["height"],
-                                  size=80 if captions == "centre" else 56,
+                                  size=caption_size(target["height"], captions),
                                   baseline=baseline,
                                   glow=captions == "centre" and not plate)
         # The sidecar is an accessibility track and is built separately, in "full" style. The

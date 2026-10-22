@@ -61,3 +61,18 @@ def test_a_phrase_that_was_never_said_is_an_error_not_a_guess():
 def test_snapping_against_an_empty_transcript_is_an_error():
     with pytest.raises(SystemExit):
         snap([], 1.0, 2.0)
+
+
+def test_hold_keeps_silence_after_the_last_word():
+    # The take ends on "Right." at 8.40 and nothing follows it: a 2s hold ends at 10.40,
+    # where the default pad would have ended at 8.65.
+    _, end, notes = snap(WORDS, 5.9, 8.4)
+    assert end == pytest.approx(8.65)
+    _, end, notes = snap(WORDS, 5.9, 8.4, hold=2.0)
+    assert end == pytest.approx(10.40)
+    assert any("held" in n for n in notes)
+
+
+def test_hold_never_reaches_into_the_next_word():
+    _, end, _ = snap(WORDS, 3.9, 4.9, hold=5.0)
+    assert end < WORDS[7]["start"], "the hold reached into the next sentence"

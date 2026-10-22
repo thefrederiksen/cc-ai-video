@@ -211,6 +211,9 @@ def _add_edit(sub):
     p.add_argument("--window", action="append", default=[],
                    help="start-end in seconds, snapped to sentence boundaries")
     p.add_argument("--append", action="store_true", help="add to the timeline, do not replace")
+    p.add_argument("--hold", type=float, default=0.0,
+                   help="seconds of silence to keep after the last word, never reaching the "
+                        "next word - for a cut that ends on a held picture")
     p.add_argument("--crop", default="", help="x,y,w,h in SOURCE pixels: the region worth "
                                               "showing. Without one a wide screen recording "
                                               "is unreadable in a phone frame.")
@@ -248,6 +251,9 @@ def _add_edit(sub):
     p.add_argument("--corrections", default="",
                    help="JSON file of [pattern, replacement] pairs applied to the captions - "
                         "the spellings a transcriber gets wrong (\"chat TBT\" -> ChatGPT)")
+    p.add_argument("--caption-position", default="", choices=["", "bottom"],
+                   help="bottom: burn the captions along the foot of the frame, whatever the "
+                        "style - for an illustrated video whose pictures own the middle")
     p.add_argument("--gap", type=float, default=1.0,
                    help="narration target only: seconds of silence where one take ends and "
                         "the next begins - a new chapter")
@@ -275,7 +281,7 @@ def _cut(args):
     from .edit.project import Project
     project = Project.open(args.project)
     clips = project.cut(take=args.take or None, keep=args.keep, windows=args.window,
-                        append=args.append, crop=_crop_spec(args.crop))
+                        append=args.append, crop=_crop_spec(args.crop), hold=args.hold)
     for clip in clips:
         print("  %-16s %7.2f - %7.2f  %s" % (clip["take"], clip["start"], clip["end"],
                                              clip["text"][:70]))
@@ -367,7 +373,8 @@ def _render(args):
     corrections = load_corrections(args.corrections) if args.corrections else ()
     out = render_timeline(project, Path(args.out).resolve(), target,
                           captions=captions, corrections=corrections, hook=args.hook,
-                          brand=brand, footer=args.footer, gap=args.gap)
+                          brand=brand, footer=args.footer, gap=args.gap,
+                          caption_position=args.caption_position)
     print("OK %s" % out)
     return 0
 
