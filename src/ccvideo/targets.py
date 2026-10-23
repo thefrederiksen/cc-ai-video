@@ -7,9 +7,12 @@ FRAME SIZES are where the video is going. Nothing else about them is interesting
 
 ENCODE PROFILES differ because the PICTURE differs:
 
-  stills   A narrated slideshow of screenshots. The picture barely moves, so 15 fps and a high
-           CRF keep the file small without the slow zoom juddering, and speech is mono so the
-           audio track is mono. Anything faster is bytes spent on a still image.
+  stills   A narrated slideshow of screenshots under a slow zoom. 30 fps, because at 15 the
+           zoom steps visibly, and CRF 26, which keeps small UI text crisp while it moves. Speech
+           is mono so the audio track is mono. (Until 23 Oct 2026 this was 15 fps and CRF 30 on
+           the reasoning that the picture barely moves - but it does move, and with ffmpeg's
+           zoompan doing the moving it shook. A viewer saw it; the assembler now draws the zoom
+           at sub-pixel precision. Files are about 2.5 times larger: 4:27 went 15 MB to 47 MB.)
   footage  Real recorded video. 30 fps and a much lower CRF, because motion at CRF 30 smears,
            and stereo because the source is stereo.
   voice    A recorded voice with no picture - narration read to a script. 48 kHz mono, so it
@@ -56,10 +59,10 @@ SIZES = {
 
 PROFILES = {
     "stills": {
-        "fps": 15,
-        "crf": "30",
+        "fps": 30,
+        "crf": "26",
         "preset": "slow",
-        "tune": "stillimage",
+        "tune": None,
         "audio_kbps": "72k",
         "sample_rate": "44100",
         "channels": "1",
