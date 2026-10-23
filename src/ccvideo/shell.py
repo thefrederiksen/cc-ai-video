@@ -61,6 +61,36 @@ def run_capture_stderr(cmd):
     return p.stderr
 
 
+def stream_frames(cmd, frames):
+    """Run an ffmpeg command that reads raw frames on stdin, feeding it each frame in turn.
+
+    `frames` yields PIL images whose size and mode match the command's -s and -pix_fmt. A
+    frame that fails to draw kills ffmpeg, so a half-written file never passes for a whole one.
+    """
+    _require(str(cmd[0]))
+    budget.lower_priority()
+    cmd = budget.ffmpeg(cmd)
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        for frame in frames:
+            proc.stdin.write(frame.tobytes())
+    except BrokenPipeError:
+        # ffmpeg stopped reading: its own words say why.
+        err = proc.stderr.read().decode("utf-8", "replace")
+        proc.wait()
+        raise MediaError("ffmpeg stopped reading frames (exit %s): %s\n%s"
+                         % (proc.returncode, " ".join(cmd[:8]), err[-4000:]))
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    proc.stdin.close()
+    err = proc.stderr.read().decode("utf-8", "replace")
+    if proc.wait() != 0:
+        raise MediaError("command failed (exit %d): %s\n%s"
+                         % (proc.returncode, " ".join(cmd[:8]), err[-4000:]))
+
+
 def probe(path):
     """Shape of a media file: duration, video size, frame rate, whether it carries audio."""
     out = run([

@@ -3,7 +3,8 @@
 This is the core of the GENERATE half, and it is deliberately not clever. Each segment is
 rendered on its own - one picture, one block of narration, a beat at each end and a slow
 alternating zoom so it does not read as a dead slideshow - and the segments are concatenated
-with the chapters written into the container.
+with the chapters written into the container. The zoom frames are drawn here, not by
+ffmpeg's zoompan, which shook (see zoom_frame).
 
 TWO THINGS THAT LOOK LIKE DETAILS AND ARE NOT
 
@@ -24,10 +25,12 @@ import os
 import re
 from pathlib import Path
 
+from PIL import Image
+
 from .. import targets
 from ..draw import render_card
 from ..narrate import speak
-from ..shell import duration, run
+from ..shell import duration, run, stream_frames
 
 ZOOM = 1.05         # maximum zoom; the image is pre-fitted so nothing is ever cropped
 LEAD_IN = 0.4       # seconds of held picture before the voice starts
@@ -74,39 +77,61 @@ def picture_for(segment, script, brand, target, build, stem, shots_dir):
     raise SystemExit("segment %s has no picture" % segment.id)
 
 
+def zoom_at(n, frames, index):
+    """The zoom factor of frame n: 1 to ZOOM (or back) over the segment, eased at both ends so
+    it neither starts nor stops with a jolt. Even segments zoom in, odd ones out."""
+    t = n / float(frames - 1)
+    t = t * t * (3 - 2 * t)
+    return 1 + (ZOOM - 1) * t if index % 2 == 0 else ZOOM - (ZOOM - 1) * t
+
+
+def letterbox(picture, w, h, bg, room=ZOOM):
+    """The picture fitted on a w x h canvas of the brand background, small enough that a zoom
+    of `room` never pushes any of it off the frame."""
+    img = Image.open(picture).convert("RGB")
+    scale = min(w / room / img.width, h / room / img.height)
+    size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+    img = img.resize(size, Image.LANCZOS)
+    canvas = Image.new("RGB", (w, h), tuple(bg[:3]))
+    canvas.paste(img, ((w - size[0]) // 2, (h - size[1]) // 2))
+    return canvas
+
+
+def zoom_frame(canvas, z):
+    """The canvas magnified z times about its centre, at SUB-PIXEL precision.
+
+    This is the reason the assembler draws its own frames. ffmpeg's zoompan snaps the crop to
+    whole pixels on every frame, so a slow zoom stands still for several frames and then jumps:
+    measured on a shipped 23 Oct 2026 tutorial, one corner of a screenshot sat still on 84 of
+    118 frames and then leapt up to 1.4 px, and the viewer reported that "the screen moves
+    around a lot". A fractional resize box moves it an even 0.03 px a frame instead.
+    """
+    w, h = canvas.size
+    half_w, half_h = w / (2.0 * z), h / (2.0 * z)
+    box = (w / 2.0 - half_w, h / 2.0 - half_h, w / 2.0 + half_w, h / 2.0 + half_h)
+    return canvas.resize((w, h), Image.BICUBIC, box=box)
+
+
 def render_segment(picture, audio, index, out, brand, target):
     """One segment: a still, its narration, a beat at each end and a slow zoom."""
     encode = target["encode"]
     w, h, fps = target["width"], target["height"], encode["fps"]
-    bg = brand["bg"]
 
     seconds = duration(audio) + LEAD_IN + TAIL
     frames = max(2, int(round(seconds * fps)))
+    canvas = letterbox(picture, w, h, brand["bg"])
 
-    fit_w, fit_h = int(w / ZOOM), int(h / ZOOM)     # so the maximum zoom never crops
-    big_w, big_h = fit_w * 2, fit_h * 2
-    pad_w, pad_h = w * 2, h * 2
-    span = ZOOM - 1.0
-    zoom = ("1+%.4f*on/%d" % (span, frames - 1) if index % 2 == 0
-            else "%.4f-%.4f*on/%d" % (ZOOM, span, frames - 1))
-    video_filter = (
-        "scale=%d:%d:force_original_aspect_ratio=decrease,"
-        "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=0x%02X%02X%02X,"
-        "zoompan=z='%s':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d,"
-        "format=yuv420p"
-        % (big_w, big_h, pad_w, pad_h, bg[0], bg[1], bg[2], zoom, frames, w, h, fps))
     layout = "mono" if encode["channels"] == "1" else "stereo"
     audio_filter = ("adelay=delays=%d:all=1,apad=pad_dur=%.2f,"
                     "aformat=channel_layouts=%s:sample_rates=%s"
                     % (int(LEAD_IN * 1000), TAIL, layout, encode["sample_rate"]))
-
-    run(["ffmpeg", "-y", "-loglevel", "error",
-         "-i", str(picture), "-i", str(audio),
-         "-filter_complex", "[0:v]%s[v];[1:a]%s[a]" % (video_filter, audio_filter),
-         "-map", "[v]", "-map", "[a]"]
-        + targets.video_args(encode)
-        + targets.audio_args(encode)
-        + ["-t", "%.3f" % seconds, "-movflags", "+faststart", str(out)])
+    cmd = (["ffmpeg", "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (w, h),
+            "-r", str(fps), "-i", "-", "-i", str(audio), "-af", audio_filter]
+           + targets.video_args(encode)
+           + targets.audio_args(encode)
+           + ["-t", "%.3f" % seconds, "-movflags", "+faststart", str(out)])
+    stream_frames(cmd, (zoom_frame(canvas, zoom_at(n, frames, index)) for n in range(frames)))
     return seconds
 
 
