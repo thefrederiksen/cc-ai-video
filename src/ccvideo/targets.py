@@ -12,7 +12,7 @@ ENCODE PROFILES differ because the PICTURE differs:
            is mono so the audio track is mono. (Until 23 Oct 2026 this was 15 fps and CRF 30 on
            the reasoning that the picture barely moves - but it does move, and with ffmpeg's
            zoompan doing the moving it shook. A viewer saw it; the assembler now draws the zoom
-           at sub-pixel precision. Files are about 2.5 times larger: 4:27 went 15 MB to 41 MB.)
+           at sub-pixel precision. Files are about 2.5 times larger: 4:27 went 15 MB to 47 MB.)
   footage  Real recorded video. 30 fps and a much lower CRF, because motion at CRF 30 smears,
            and stereo because the source is stereo.
   voice    A recorded voice with no picture - narration read to a script. 48 kHz mono, so it

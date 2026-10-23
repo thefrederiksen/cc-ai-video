@@ -90,7 +90,10 @@ def letterbox(picture, w, h, bg, room=ZOOM):
     of `room` never pushes any of it off the frame."""
     img = Image.open(picture).convert("RGB")
     scale = min(w / room / img.width, h / room / img.height)
-    size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+    # Round DOWN, then to the canvas's parity, so the picture is never wider than the zoom
+    # leaves room for and sits exactly centred - not half a pixel to one side.
+    fw, fh = int(img.width * scale), int(img.height * scale)
+    size = (max(1, fw - (w - fw) % 2), max(1, fh - (h - fh) % 2))
     img = img.resize(size, Image.LANCZOS)
     canvas = Image.new("RGB", (w, h), tuple(bg[:3]))
     canvas.paste(img, ((w - size[0]) // 2, (h - size[1]) // 2))

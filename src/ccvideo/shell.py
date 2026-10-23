@@ -11,6 +11,7 @@ read is an error that names the command and shows what ffmpeg said.
 import json
 import shutil
 import subprocess
+import tempfile
 
 from . import budget
 
@@ -70,25 +71,30 @@ def stream_frames(cmd, frames):
     _require(str(cmd[0]))
     budget.lower_priority()
     cmd = budget.ffmpeg(cmd)
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-    try:
-        for frame in frames:
-            proc.stdin.write(frame.tobytes())
-    except BrokenPipeError:
-        # ffmpeg stopped reading: its own words say why.
-        err = proc.stderr.read().decode("utf-8", "replace")
-        proc.wait()
-        raise MediaError("ffmpeg stopped reading frames (exit %s): %s\n%s"
-                         % (proc.returncode, " ".join(cmd[:8]), err[-4000:]))
-    except BaseException:
-        proc.kill()
-        proc.wait()
-        raise
-    proc.stdin.close()
-    err = proc.stderr.read().decode("utf-8", "replace")
-    if proc.wait() != 0:
+    # stderr goes to a file, not a pipe: nobody reads a pipe while frames are being written,
+    # and a full one would leave both sides waiting forever instead of failing.
+    with tempfile.TemporaryFile() as log:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=log)
+        stopped = False
+        try:
+            for frame in frames:
+                proc.stdin.write(frame.tobytes())
+            proc.stdin.close()
+        except BrokenPipeError:
+            stopped = True                # ffmpeg stopped reading; its exit and log say why
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        code = proc.wait()
+        log.seek(0)
+        err = log.read().decode("utf-8", "replace")
+    if code != 0:
         raise MediaError("command failed (exit %d): %s\n%s"
-                         % (proc.returncode, " ".join(cmd[:8]), err[-4000:]))
+                         % (code, " ".join(cmd[:8]), err[-4000:]))
+    if stopped:
+        raise MediaError("ffmpeg stopped reading frames before the last one: %s\n%s"
+                         % (" ".join(cmd[:8]), err[-4000:]))
 
 
 def probe(path):
