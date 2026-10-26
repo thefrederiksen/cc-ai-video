@@ -172,13 +172,27 @@ The recorder sets each frame's time itself and screenshots it in headless Chromi
 frame is slow to capture, never late on screen.
 
 ```
-ccvideo capture page.html --audio narration.mp4 --out short.mp4 --end <s> --target shorts
+ccvideo capture page.html --audio narration.mp4 --out short.mp4 --end <s> --target shorts \
+                --fps 15 --workers 8
 ```
 
 `--target` sets the frame size and levels the loudness the same way every other target does.
 Key the page's animation to the narration's word timings (`ccvideo transcribe`), never to
-guessed seconds. About 0.3 s a frame: a 56 s Short took 9 minutes. First used for the
-software factory Short (devthrottle_internal `marketing/tutorials/video/factory-short/`).
+guessed seconds. One browser draws one frame at a time on one core, about 0.3 to 0.8 s a
+frame, so a long capture takes hours single-handed. First used for the software factory Short
+(devthrottle_internal `marketing/tutorials/video/factory-short/`).
+
+**Use `--workers`.** Every frame depends only on its own time, so the frames are split into
+runs by frame number, each run captured by its own browser, and the pieces joined without
+re-encoding; the narration goes on once and is levelled once, so there is no seam to hear. A
+60 s clip at 15 fps went from 11m51s to 1m57s with `--workers 8` on a 16-core machine. Capped at
+half the cores like every other worker count here, and no run is shorter than two seconds.
+
+Nothing appears at `--out` until the whole file is joined, levelled and checked (frame count
+and length). A failed capture leaves nothing behind - no partial mp4 to be mistaken for the
+real one. A screenshot that stalls past 30 s is retaken in a fresh browser, twice at most, and
+each stall prints what the browser looked like; read those lines, they are the evidence for why
+it stalled.
 
 ## The gate - nothing ships without it
 

@@ -486,6 +486,9 @@ def _add_capture(sub):
     p.add_argument("--target", default="shorts",
                    help="where it is going: sets the frame size and the loudness (shorts, youtube, ...)")
     p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--workers", type=int, default=1,
+                   help="split the frames into this many runs, each in its own browser, and "
+                        "join them; capped at half the cores, no run under two seconds")
     p.set_defaults(run=_capture)
 
 
@@ -493,11 +496,8 @@ def _capture(args):
     from .capture import capture
     target = targets.target(args.target)
     out = capture(args.page, args.audio, args.out, args.start, args.end, target["width"],
-                  target["height"], args.fps)
-    if target["loudness"] is not None:
-        from .generate.assemble import normalise_loudness
-        normalise_loudness(out, target["loudness"], target["encode"])
-        print("  levelled to %.1f LUFS" % target["loudness"])
+                  target["height"], args.fps, workers=args.workers,
+                  loudness=target["loudness"], encode=target["encode"])
     print("OK %s" % out)
     return 0
 
