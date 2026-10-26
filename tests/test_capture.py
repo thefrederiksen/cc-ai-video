@@ -3,10 +3,11 @@ import json
 import subprocess
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from ccvideo import budget
-from ccvideo.capture import capture, frame_count, run_count, shoot, split
+from ccvideo.capture import _check, capture, frame_count, run_count, shoot, split
 from ccvideo.cli import main
 
 PAGE = """<!doctype html><html><body style="margin:0;background:#000">
@@ -85,12 +86,15 @@ def test_no_run_is_shorter_than_two_seconds_and_the_budget_caps_the_rest():
 # --- a stalled screenshot: fresh browser, same frame, evidence printed ------------------------
 
 class _Tab:
-    def __init__(self, stalls):
+    def __init__(self, stalls, throws=None):
         self.stalls = stalls
+        self.throws = throws
         self.posed = []
 
     def evaluate(self, script, t):
         self.posed.append(t)
+        if self.throws:
+            raise PlaywrightError(self.throws)
 
     def screenshot(self, type, timeout):
         if self.stalls:
@@ -100,10 +104,14 @@ class _Tab:
 
 
 class _FakeBrowser:
-    def __init__(self, stalls=0):
-        self.tab = _Tab(stalls)
+    def __init__(self, stalls=0, throws=None):
+        self.tab = _Tab(stalls, throws)
         self.errors = []
         self.closed = False
+        self.shots = 0
+
+    def broken(self):
+        return False
 
     def evidence(self):
         return "page crashed=False, browser connected=True, page errors=0"
@@ -126,6 +134,7 @@ def test_a_stalled_frame_is_retaken_in_a_fresh_browser_and_the_stall_is_reported
     assert first.closed and browser is fresh[0]
     assert browser.tab.posed == [3.5]                 # the SAME time, posed again
     assert "frame 7 (3.50s) stalled" in said[0] and "crashed=False" in said[0]
+    assert "Timeout 30000ms exceeded" in said[0]      # Playwright's own words are kept
 
 
 def test_a_frame_that_keeps_stalling_stops_the_run_with_the_evidence():
@@ -134,7 +143,66 @@ def test_a_frame_that_keeps_stalling_stops_the_run_with_the_evidence():
               say=lambda *a, **k: None)
 
 
+def test_a_page_that_throws_is_a_defect_not_a_stall_and_is_not_retried():
+    opened = []
+    with pytest.raises(SystemExit, match=r"the page threw at frame 2 \(0.50s\).*photo 7 missing"):
+        shoot(lambda: opened.append(1), _FakeBrowser(throws="Error: photo 7 missing"), 2, 0.5,
+              30, say=lambda *a, **k: None)
+    assert opened == []
+
+
 # --- real browsers ---------------------------------------------------------------------------
+
+MOVING = """<!doctype html><html><body style="margin:0;background:#000">
+<div id=b style="position:absolute;top:0;width:40px;height:100px;background:#fff"></div>
+<script>window.ccvideoFrame = t => { document.getElementById('b').style.left = (t * 200) + 'px' }</script>
+</body></html>"""
+
+
+def _box_left(video, n):
+    """Where the white box is in frame n: the first bright column of row 50."""
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vf",
+                          "select=eq(n\\,%d),format=gray,crop=1080:2:0:50" % n, "-frames:v", "1",
+                          "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                         capture_output=True, check=True).stdout
+    return next(x for x, v in enumerate(raw[:1080]) if v > 128)
+
+
+def test_runs_in_parallel_join_in_order_each_frame_at_its_own_time(tmp_path):
+    wav = tmp_path / "tone.wav"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=5", str(wav)], check=True)
+    page = tmp_path / "page.html"
+    page.write_text(MOVING, encoding="utf-8")
+    out = tmp_path / "out.mp4"
+    assert main(["capture", str(page), "--audio", str(wav), "--out", str(out), "--end", "4.5",
+                 "--target", "shorts", "--fps", "4", "--workers", "2"]) == 0
+    assert _frames(out) == 18
+    # Frame n is at n / 4 s and the box at 200 px a second: 50 px a frame, in both runs.
+    for n in (1, 8, 9, 10, 17):
+        assert abs(_box_left(out, n) - 50 * n) <= 2, n
+    assert not list(tmp_path.glob("out.parts*"))
+
+
+def test_a_narration_shorter_than_the_capture_is_refused_before_any_frame(tmp_path):
+    short = tmp_path / "short.wav"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=0.95", str(short)], check=True)
+    page = tmp_path / "page.html"
+    page.write_text(PAGE, encoding="utf-8")
+    with pytest.raises(SystemExit, match="Bring --end in to at most 0.95"):
+        capture(page, short, tmp_path / "out.mp4", 0, 1, 1080, 1920, fps=4)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["page.html", "short.wav"]
+
+
+def test_the_check_refuses_a_file_short_of_the_frames_captured(tmp_path, tone):
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=black:s=64x64:r=4:d=0.75", "-i", str(tone), "-shortest",
+                    "-c:v", "libx264", "-c:a", "aac", str(clip)], check=True)
+    with pytest.raises(SystemExit, match="holds 3 frames, 4 were captured"):
+        _check(clip, 4, 4)
+
 
 def test_runs_in_parallel_join_to_exactly_the_frames_captured(tmp_path):
     wav = tmp_path / "tone.wav"
@@ -147,7 +215,7 @@ def test_runs_in_parallel_join_to_exactly_the_frames_captured(tmp_path):
                  "--target", "shorts", "--fps", "4", "--workers", "2"]) == 0
     assert _frames(out) == 18
     assert "audio" in {s["codec_type"] for s in _probe(out)}
-    assert not (tmp_path / "out.parts").exists()
+    assert not list(tmp_path.glob("out.parts*"))
 
 
 STALL = """<!doctype html><html><body>
@@ -163,7 +231,7 @@ def test_a_page_that_stalls_leaves_nothing_at_the_output(tmp_path, tone):
     with pytest.raises(SystemExit, match="stalled 3 times"):
         capture(page, tone, out, 0, 1, 1080, 1920, fps=4, timeout=1)
     assert not out.exists()
-    assert not (tmp_path / "out.parts").exists()
+    assert not list(tmp_path.glob("out.parts*"))
 
 
 def test_a_refused_page_leaves_nothing_behind(tmp_path, tone):

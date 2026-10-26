@@ -21,6 +21,7 @@ mp4 at the output path once ran through the next step as if it were the real out
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -55,6 +56,8 @@ class _Browser:
 
     def __init__(self, pw, url, page, width, height):
         self.browser = pw.chromium.launch()
+        self.launched = time.time()
+        self.shots = 0
         self.tab = self.browser.new_page(viewport={"width": width, "height": height})
         self.errors = []
         self.crashed = False
@@ -67,10 +70,17 @@ class _Browser:
             raise SystemExit("%s does not define %s(t) - the recorder poses each frame "
                              "through it" % (page, HOOK))
 
+    def broken(self):
+        return self.crashed or not self.browser.is_connected()
+
     def evidence(self):
-        """What the browser looked like when a frame stalled - so the next one says why."""
-        return "page crashed=%s, browser connected=%s, page errors=%d" % (
-            self.crashed, self.browser.is_connected(), len(self.errors))
+        """What the browser looked like when a frame stalled - so the next one says why. How
+        long it had run and how many frames it had shot tell a browser that goes bad after a
+        while from a frame that is heavy in any browser."""
+        return ("page crashed=%s, browser connected=%s, page errors=%d, "
+                "%d frames shot in %.0fs since launch" % (
+                    self.crashed, self.browser.is_connected(), len(self.errors),
+                    self.shots, time.time() - self.launched))
 
     def close(self):
         try:
@@ -82,12 +92,16 @@ class _Browser:
 def shoot(open_browser, browser, i, t, timeout, retries=SHOT_RETRIES, say=print):
     """Pose frame `i` at time `t` and screenshot it. Returns (png, browser).
 
-    A screenshot that stalls past `timeout` is retried in a FRESH browser, up to `retries`
-    times. That is safe because a frame depends only on its time, so a new browser draws the
-    same picture. Each stall is reported with what the old browser looked like, because a
-    retry that hides the evidence is how the cause stays unknown. Retries spent, the run stops.
+    A screenshot that stalls past `timeout`, or a browser that crashes or disconnects, is
+    retried in a FRESH browser, up to `retries` times. That is safe because a frame depends
+    only on its time, so a new browser draws the same picture. Each stall is reported with
+    Playwright's whole message (its call log says how far the screenshot got) and what the old
+    browser looked like, because a retry that hides the evidence is how the cause stays
+    unknown. Retries spent, the run stops. A page that THROWS is a defect in the page, not a
+    stall, and stops the run at once.
     """
     from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
     for attempt in range(retries + 1):
         try:
@@ -95,16 +109,20 @@ def shoot(open_browser, browser, i, t, timeout, retries=SHOT_RETRIES, say=print)
             if browser.errors:
                 raise SystemExit("the page threw at frame %d (%.2fs): %s"
                                  % (i, t, browser.errors[0]))
-            return browser.tab.screenshot(type="png", timeout=timeout * 1000), browser
+            png = browser.tab.screenshot(type="png", timeout=timeout * 1000)
+            browser.shots += 1
+            return png, browser
         except PlaywrightError as err:
-            first = str(err).splitlines()[0] if str(err) else type(err).__name__
+            if not isinstance(err, PlaywrightTimeout) and not browser.broken():
+                raise SystemExit("the page threw at frame %d (%.2fs): %s" % (i, t, err))
+            said = str(err).strip() or type(err).__name__
             evidence = browser.evidence()
             browser.close()
             if attempt == retries:
-                raise SystemExit("frame %d (%.2fs) stalled %d times, last: %s (%s)"
-                                 % (i, t, retries + 1, first, evidence))
-            say("  frame %d (%.2fs) stalled: %s (%s) - fresh browser, retry %d/%d"
-                % (i, t, first, evidence, attempt + 1, retries), flush=True)
+                raise SystemExit("frame %d (%.2fs) stalled %d times (%s), last:\n%s"
+                                 % (i, t, retries + 1, evidence, said))
+            say("  frame %d (%.2fs) stalled (%s) - fresh browser, retry %d/%d:\n%s"
+                % (i, t, evidence, attempt + 1, retries, said), flush=True)
             browser = open_browser()
 
 
@@ -200,14 +218,22 @@ def capture(page, audio, out, start, end, width, height, fps=30, workers=1,
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     frames = frame_count(start, end, fps)
+    # The narration must cover every frame, or -shortest cuts the picture and the check
+    # refuses the file - after the whole capture. A one-second probe now says it first.
+    have = probe(audio)
+    heard = (have["audio_duration"] or have["duration"]) - start
+    if not have["audio"] or heard < frames / float(fps):
+        raise SystemExit("the narration %s has %.2fs from --start %.2f; %d frames at %d fps "
+                         "need %.2fs. Bring --end in to at most %.2f."
+                         % (audio, max(heard, 0), start, frames, fps, frames / float(fps),
+                            start + max(heard, 0)))
     workers = run_count(workers, frames, fps)
     bounds = split(frames, workers)
     # Each encoder gets its share of the HALF of the cores this library may use.
     threads = budget.encoder_threads(workers)
-    work = out.parent / (out.stem + ".parts")
-    if work.exists():
-        shutil.rmtree(work)
-    work.mkdir()
+    # A fresh folder per capture, so two captures (or an illustrate render) aimed at the same
+    # name never delete each other's parts.
+    work = Path(tempfile.mkdtemp(prefix=out.stem + ".parts-", dir=str(out.parent)))
     budget.lower_priority()
     jobs = [(page, start, bounds[n], bounds[n + 1], fps, width, height,
              work / ("part-%03d.mp4" % n), threads, timeout,
