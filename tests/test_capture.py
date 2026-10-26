@@ -184,15 +184,55 @@ def test_runs_in_parallel_join_in_order_each_frame_at_its_own_time(tmp_path):
     assert not list(tmp_path.glob("out.parts*"))
 
 
-def test_a_narration_shorter_than_the_capture_is_refused_before_any_frame(tmp_path):
-    short = tmp_path / "short.wav"
+def _tone(path, seconds):
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-                    "sine=frequency=440:duration=0.95", str(short)], check=True)
+                    "sine=frequency=440:duration=%s" % seconds, str(path)], check=True)
+    return path
+
+
+def test_a_narration_short_by_a_frame_is_refused_and_the_suggested_end_captures(tmp_path):
+    short = _tone(tmp_path / "short.wav", 0.6)
     page = tmp_path / "page.html"
     page.write_text(PAGE, encoding="utf-8")
-    with pytest.raises(SystemExit, match="Bring --end in to at most 0.95"):
-        capture(page, short, tmp_path / "out.mp4", 0, 1, 1080, 1920, fps=4)
+    out = tmp_path / "out.mp4"
+    with pytest.raises(SystemExit, match=r"Bring --end in to at most 0\.500") as err:
+        capture(page, short, out, 0, 1, 1080, 1920, fps=4)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["page.html", "short.wav"]
+    suggested = float(str(err.value).rsplit("at most ", 1)[1].rstrip("."))
+    capture(page, short, out, 0, suggested, 1080, 1920, fps=4)
+    assert _frames(out) == 2
+
+
+class _PastThePreflight(Exception):
+    pass
+
+
+@pytest.mark.parametrize("seconds,fps", [(0.95, 4), (1.15, 4), (882.17, 15)])
+def test_a_narration_ending_inside_the_last_frame_is_accepted(tmp_path, monkeypatch, seconds,
+                                                              fps):
+    # 882.17 s at 15 fps is the command from devthrottle#4496: 13233 frames, 882.20 s.
+    from ccvideo import capture as cap
+    narration = _tone(tmp_path / "n.wav", seconds)
+    frames = frame_count(0, seconds, fps)
+    assert frames / float(fps) > seconds                  # it does NOT end on a frame
+
+    def stop(count, workers):
+        raise _PastThePreflight(count)
+
+    monkeypatch.setattr(cap, "split", stop)
+    with pytest.raises(_PastThePreflight) as reached:
+        cap.capture(tmp_path / "p.html", narration, tmp_path / "o.mp4", 0, seconds,
+                    1080, 1920, fps=fps)
+    assert reached.value.args == (frames,)
+
+
+def test_a_narration_ending_inside_the_last_frame_captures_every_frame(tmp_path):
+    narration = _tone(tmp_path / "n.wav", 0.95)
+    page = tmp_path / "page.html"
+    page.write_text(PAGE, encoding="utf-8")
+    out = tmp_path / "out.mp4"
+    capture(page, narration, out, 0, 0.95, 1080, 1920, fps=4)
+    assert _frames(out) == 4
 
 
 def test_the_check_refuses_a_file_short_of_the_frames_captured(tmp_path, tone):

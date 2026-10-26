@@ -18,6 +18,7 @@ before that lives in a work folder beside it, and a failed run deletes that fold
 mp4 at the output path once ran through the next step as if it were the real output.
 """
 
+import math
 import os
 import shutil
 import subprocess
@@ -175,7 +176,10 @@ def _pool_run(job):
 
 
 def _join(parts, audio, joined, start, end):
-    """Join the parts in order, without re-encoding, under [start, end) of the narration."""
+    """Join the parts in order, without re-encoding, under [start, end) of the narration.
+
+    No -shortest: a narration that ends a fraction of a frame early would make it drop the
+    whole last frame, and the frame check would then refuse a file that is fine."""
     listing = Path(joined).parent / "concat.txt"
     # ffmpeg reads a relative name in a concat list against the LIST's folder, so every part
     # is named absolutely.
@@ -186,7 +190,7 @@ def _join(parts, audio, joined, start, end):
          "-ss", "%.3f" % start, "-t", "%.3f" % (end - start), "-i", str(audio),
          "-map", "0:v", "-map", "1:a", "-c:v", "copy",
          "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-         "-movflags", "+faststart", "-shortest", str(joined)])
+         "-movflags", "+faststart", str(joined)])
 
 
 def _check(path, frames, fps):
@@ -218,15 +222,19 @@ def capture(page, audio, out, start, end, width, height, fps=30, workers=1,
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     frames = frame_count(start, end, fps)
-    # The narration must cover every frame, or -shortest cuts the picture and the check
-    # refuses the file - after the whole capture. A one-second probe now says it first.
+    # The narration must reach the last frame. A narration that ends inside the last frame
+    # is normal - it rarely ends on a frame boundary - and the picture simply runs that
+    # fraction longer. One short by a whole frame or more is a wrong --end, and a one-second
+    # probe says so now rather than after the capture. The suggestion is the last frame
+    # boundary the narration covers, so following it always passes this check.
     have = probe(audio)
-    heard = (have["audio_duration"] or have["duration"]) - start
-    if not have["audio"] or heard < frames / float(fps):
-        raise SystemExit("the narration %s has %.2fs from --start %.2f; %d frames at %d fps "
-                         "need %.2fs. Bring --end in to at most %.2f."
-                         % (audio, max(heard, 0), start, frames, fps, frames / float(fps),
-                            start + max(heard, 0)))
+    heard = max((have["audio_duration"] or have["duration"]) - start, 0.0)
+    if not have["audio"] or heard <= (frames - 1) / float(fps):
+        covered = math.floor(heard * fps + 1e-6)
+        raise SystemExit("the narration %s has %.3fs from --start %.3f; %d frames at %d fps "
+                         "need %.3fs. Bring --end in to at most %.3f."
+                         % (audio, heard, start, frames, fps, frames / float(fps),
+                            start + covered / float(fps)))
     workers = run_count(workers, frames, fps)
     bounds = split(frames, workers)
     # Each encoder gets its share of the HALF of the cores this library may use.
