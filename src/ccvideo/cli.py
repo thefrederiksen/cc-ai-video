@@ -49,6 +49,8 @@ def main(argv=None):
 # ------------------------------------------------------------------ generate
 
 def _add_tutorial(sub):
+    from .narrate import EL_MODEL_ID, EL_MODELS
+
     p = sub.add_parser("tutorial", help="a narrated video from a segment script and frames")
     p.add_argument("--script", required=True)
     p.add_argument("--shots", required=True, help="directory holding the IMAGE files")
@@ -59,6 +61,8 @@ def _add_tutorial(sub):
                    help="desktop 1920x1080 or phone 1080x1920")
     p.add_argument("--tts", default="openai", choices=["openai", "elevenlabs"])
     p.add_argument("--voice", default="", help="override the voice for the active provider")
+    p.add_argument("--el-model", default="", choices=("",) + EL_MODELS,
+                   help="ElevenLabs model (default %s, so warm caches stay valid)" % EL_MODEL_ID)
     p.add_argument("--work", default="", help="build directory (default: 'build' beside --out)")
     p.add_argument("--lang", default="", help="language for the runtime estimate")
     p.add_argument("--only", default="", help="build just these segment ids")
@@ -114,7 +118,7 @@ def _tutorial(args):
 
     out = Path(args.out).resolve()
     build = Build(Path(args.work).resolve() if args.work else out.parent / "build")
-    voice = Voice(brand, args.tts, args.voice or None)
+    voice = Voice(brand, args.tts, args.voice or None, args.el_model or None)
 
     todo = sum(1 for s in doc.segments
                if not cached(cache_path(build.audio, s.id, s.text, voice)))

@@ -42,6 +42,9 @@ OPENAI_URL = "https://api.openai.com/v1/audio/speech"
 
 EL_VOICE_ID = "BtWabtumIemAotTjP5sk"
 EL_MODEL_ID = "eleven_multilingual_v2"
+# The models a video may be narrated on. The default stays the older model on purpose: moving it
+# would miss every warm cache and bill each video again. A new video asks for v4 with --el-model.
+EL_MODELS = (EL_MODEL_ID, "eleven_v4", "eleven_v4_turbo")
 EL_KEY_NAME = "ELEVENLABS_API_KEY"
 EL_SETTINGS = {
     "stability": 0.55,
@@ -61,12 +64,18 @@ class Voice:
     caller that changed one and expected the others to keep their cached audio.
     """
 
-    def __init__(self, brand, provider="openai", voice=None):
+    def __init__(self, brand, provider="openai", voice=None, el_model=None):
         if provider not in ("openai", "elevenlabs"):
             raise SystemExit("unknown voice provider %r - have openai, elevenlabs" % provider)
         self.brand = brand
         self.provider = provider
+        if el_model and provider != "elevenlabs":
+            raise SystemExit("--el-model only applies to --tts elevenlabs")
+        if el_model and el_model not in EL_MODELS:
+            raise SystemExit("unknown ElevenLabs model %r - have %s"
+                             % (el_model, ", ".join(EL_MODELS)))
         self.voice = voice or (OPENAI_VOICE if provider == "openai" else EL_VOICE_ID)
+        self.el_model = el_model or EL_MODEL_ID
 
     @property
     def key_name(self):
@@ -79,7 +88,7 @@ class Voice:
         """Identifies the exact voice. Any change here misses the cache, which is the point."""
         if self.provider == "openai":
             return "openai" + OPENAI_MODEL + self.voice + self.brand["instructions"]
-        return ("elevenlabs" + self.voice + EL_MODEL_ID
+        return ("elevenlabs" + self.voice + self.el_model
                 + json.dumps(EL_SETTINGS, sort_keys=True))
 
     def digest(self, text):
@@ -91,7 +100,7 @@ class Voice:
     def describe(self):
         if self.provider == "openai":
             return "OpenAI %s / %s (key %s)" % (self.voice, OPENAI_MODEL, OPENAI_KEY_NAME)
-        return "ElevenLabs %s / %s (key %s)" % (self.voice, EL_MODEL_ID, EL_KEY_NAME)
+        return "ElevenLabs %s / %s (key %s)" % (self.voice, self.el_model, EL_KEY_NAME)
 
 
 def cache_path(cache_dir, segment_id, text, voice):
@@ -122,7 +131,7 @@ def synthesise(text, voice, out_path, api_key):
     else:
         body = json.dumps({
             "text": said,
-            "model_id": EL_MODEL_ID,
+            "model_id": voice.el_model,
             "voice_settings": EL_SETTINGS,
         }).encode("utf-8")
         request = urllib.request.Request(

@@ -16,6 +16,7 @@ import json
 import pytest
 
 from ccvideo import brand as brandlib
+from ccvideo import narrate
 from ccvideo.narrate import Voice, cache_path
 
 PHRASE = "The quick brown fox says DevThrottle."
@@ -106,3 +107,51 @@ def test_a_brand_file_row_replaces_a_builtin_rather_than_merging(tmp_path):
     path = tmp_path / "brands.json"
     path.write_text(json.dumps({"default": OTHER["other"]}), encoding="utf-8")
     assert brandlib.get("default", str(path))["product"] == "Other"
+
+
+def test_the_elevenlabs_default_digest_is_frozen():
+    # Worked out on the code before --el-model existed: a warm ElevenLabs cache must stay warm.
+    assert Voice(brandlib.get("default"), "elevenlabs").digest(PHRASE) == "4ea83a811c"
+
+
+def test_naming_the_default_model_keeps_the_cache():
+    brand = brandlib.get("default")
+    assert Voice(brand, "elevenlabs", el_model="eleven_multilingual_v2").digest(PHRASE)         == Voice(brand, "elevenlabs").digest(PHRASE)
+
+
+def test_changing_the_model_misses_the_cache():
+    brand = brandlib.get("default")
+    assert Voice(brand, "elevenlabs", el_model="eleven_v4").digest(PHRASE)         != Voice(brand, "elevenlabs").digest(PHRASE)
+
+
+def test_the_chosen_model_is_the_one_sent(monkeypatch, tmp_path):
+    sent = {}
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return b"x" * 3000
+
+    def fake_urlopen(request):
+        sent.update(json.loads(request.data))
+        return Reply()
+
+    monkeypatch.setattr(narrate.urllib.request, "urlopen", fake_urlopen)
+    voice = Voice(brandlib.get("default"), "elevenlabs", el_model="eleven_v4")
+    narrate.synthesise("Hello.", voice, tmp_path / "a.mp3", "not-a-key")
+    assert sent["model_id"] == "eleven_v4"
+
+
+def test_an_unknown_model_stops_the_build():
+    with pytest.raises(SystemExit):
+        Voice(brandlib.get("default"), "elevenlabs", el_model="eleven_v9")
+
+
+def test_a_model_on_the_other_provider_stops_the_build():
+    with pytest.raises(SystemExit):
+        Voice(brandlib.get("default"), "openai", el_model="eleven_v4")
