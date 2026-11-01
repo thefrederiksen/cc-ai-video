@@ -111,6 +111,9 @@ PROFILES = {
 TARGETS = {
     "youtube": {"size": "desktop", "profile": "footage", "captions": "full",
                 "loudness": -14.0, "max_seconds": None},
+    # 1080p at master quality: dark gradients with glow show banding at the footage CRF.
+    "youtube-master": {"size": "desktop", "profile": "master", "captions": "full",
+                       "loudness": -14.0, "max_seconds": None},
     "youtube-uhd": {"size": "uhd", "profile": "master", "captions": "full",
                     "loudness": -14.0, "max_seconds": None},
     "shorts": {"size": "phone", "profile": "footage", "captions": "centre",
