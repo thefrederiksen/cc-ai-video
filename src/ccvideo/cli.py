@@ -59,7 +59,10 @@ def _add_tutorial(sub):
     p.add_argument("--brands", default="", help="JSON file of extra or replacement brands")
     p.add_argument("--size", default="desktop", choices=sorted(targets.SIZES),
                    help="desktop 1920x1080 or phone 1080x1920")
-    p.add_argument("--tts", default="openai", choices=["openai", "elevenlabs"])
+    p.add_argument("--tts", default="openai", choices=["openai", "elevenlabs", "local"])
+    p.add_argument("--voice-budget", type=float, default=0,
+                   help="--tts local: stop starting new voice work after this many seconds and "
+                        "exit 3 (PARTIAL); run the same command again to carry on from the cache")
     p.add_argument("--voice", default="", help="override the voice for the active provider")
     p.add_argument("--el-model", default="", choices=("",) + EL_MODELS,
                    help="ElevenLabs model (default %s, so warm caches stay valid)" % EL_MODEL_ID)
@@ -118,7 +121,8 @@ def _tutorial(args):
 
     out = Path(args.out).resolve()
     build = Build(Path(args.work).resolve() if args.work else out.parent / "build")
-    voice = Voice(brand, args.tts, args.voice or None, args.el_model or None)
+    voice = Voice(brand, args.tts, args.voice or None, args.el_model or None,
+                  budget=args.voice_budget or None)
 
     todo = sum(1 for s in doc.segments
                if not cached(cache_path(build.audio, s.id, s.text, voice)))

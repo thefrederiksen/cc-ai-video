@@ -17,6 +17,11 @@ Providers
                  CCVIDEO_OPENAI_KEY_NAME names instead.
     elevenlabs   the long-form narrator, and the only provider that returns exact character
                  timings for what it said. Key: ELEVENLABS_API_KEY.
+    local        the owner's own trained voice, made on this machine by the `soren-voice`
+                 command (VoxCPM2 plus his LoRA; CPU, about 23x slower than real time). No key,
+                 no cost. Slow, so a run can be given a voice budget: once it is spent, no new
+                 segment or chunk is started and the run stops with "PARTIAL" (exit 3); the SAME
+                 command run again carries on from the cache.
 
 Keys are read at the moment of use and never written anywhere.
 """
@@ -24,6 +29,11 @@ Keys are read at the moment of use and never written anywhere.
 import hashlib
 import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -46,6 +56,9 @@ EL_MODEL_ID = "eleven_multilingual_v2"
 # would miss every warm cache and bill each video again. A new video asks for v4 with --el-model.
 EL_MODELS = (EL_MODEL_ID, "eleven_v4", "eleven_v4_turbo")
 EL_KEY_NAME = "ELEVENLABS_API_KEY"
+LOCAL_VOICE = "soren"
+LOCAL_COMMAND = os.environ.get("CCVIDEO_LOCAL_VOICE_COMMAND", "").strip() or "soren-voice"
+PARTIAL_EXIT = 3
 EL_SETTINGS = {
     "stability": 0.55,
     "similarity_boost": 0.75,
@@ -64,9 +77,11 @@ class Voice:
     caller that changed one and expected the others to keep their cached audio.
     """
 
-    def __init__(self, brand, provider="openai", voice=None, el_model=None):
-        if provider not in ("openai", "elevenlabs"):
-            raise SystemExit("unknown voice provider %r - have openai, elevenlabs" % provider)
+    def __init__(self, brand, provider="openai", voice=None, el_model=None, budget=None):
+        if provider not in ("openai", "elevenlabs", "local"):
+            raise SystemExit("unknown voice provider %r - have openai, elevenlabs, local" % provider)
+        if budget and provider != "local":
+            raise SystemExit("--voice-budget only applies to --tts local")
         self.brand = brand
         self.provider = provider
         if el_model and provider != "elevenlabs":
@@ -74,7 +89,10 @@ class Voice:
         if el_model and el_model not in EL_MODELS:
             raise SystemExit("unknown ElevenLabs model %r - have %s"
                              % (el_model, ", ".join(EL_MODELS)))
-        self.voice = voice or (OPENAI_VOICE if provider == "openai" else EL_VOICE_ID)
+        self.voice = voice or {"openai": OPENAI_VOICE, "elevenlabs": EL_VOICE_ID,
+                               "local": LOCAL_VOICE}[provider]
+        # When the voice budget runs out (local only): seconds since the epoch, or None.
+        self.deadline = time.time() + budget if budget else None
         self.el_model = el_model or EL_MODEL_ID
 
     @property
@@ -82,12 +100,16 @@ class Voice:
         return OPENAI_KEY_NAME if self.provider == "openai" else EL_KEY_NAME
 
     def api_key(self):
+        if self.provider == "local":
+            return None
         return credentials.get(self.key_name)
 
     def fingerprint(self):
         """Identifies the exact voice. Any change here misses the cache, which is the point."""
         if self.provider == "openai":
             return "openai" + OPENAI_MODEL + self.voice + self.brand["instructions"]
+        if self.provider == "local":
+            return "local" + LOCAL_COMMAND + self.voice
         return ("elevenlabs" + self.voice + self.el_model
                 + json.dumps(EL_SETTINGS, sort_keys=True))
 
@@ -98,6 +120,10 @@ class Voice:
         ).hexdigest()[:10]
 
     def describe(self):
+        if self.provider == "local":
+            return "local %s / %s (no key, no cost%s)" % (
+                self.voice, LOCAL_COMMAND,
+                ", voice budget %ds" % (self.deadline - time.time()) if self.deadline else "")
         if self.provider == "openai":
             return "OpenAI %s / %s (key %s)" % (self.voice, OPENAI_MODEL, OPENAI_KEY_NAME)
         return "ElevenLabs %s / %s (key %s)" % (self.voice, self.el_model, EL_KEY_NAME)
@@ -113,9 +139,51 @@ def cached(path):
     return path.exists() and path.stat().st_size > MIN_AUDIO_BYTES
 
 
+def partial(why):
+    """Stop the run cleanly: the voice budget is spent. The cache keeps everything voiced."""
+    print("PARTIAL: %s - run the same command again to carry on" % why, flush=True)
+    sys.exit(PARTIAL_EXIT)
+
+
+def synthesise_local(said, voice, out_path):
+    """Voice one segment with the local command. Its chunks are cached beside the segment cache,
+    so a segment cut short by the budget resumes mid-segment on the next run."""
+    if not shutil.which(LOCAL_COMMAND):
+        raise SystemExit("--tts local needs the %r command on PATH" % LOCAL_COMMAND)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    work = out_path.parent / "local-voice" / out_path.stem
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "text.txt").write_text(said, encoding="utf-8")
+    cmd = [LOCAL_COMMAND, str(work / "text.txt"), str(work / "voice.wav"), "--parts", str(work / "parts")]
+    if voice.deadline:
+        left = voice.deadline - time.time()
+        if left <= 0:
+            partial("voice budget spent")
+        cmd += ["--budget", "%d" % max(1, left)]
+    r = subprocess.run(cmd)
+    if r.returncode == PARTIAL_EXIT:
+        partial("voice budget spent inside segment %s" % out_path.stem)
+    if r.returncode != 0:
+        raise SystemExit("%s failed (exit %d) on %r" % (LOCAL_COMMAND, r.returncode, said[:60]))
+    # soren-voice pads 0.4 s lead and 2 s tail for a whole narration; a segment has its own gaps
+    # from the assembler, so keep only the speech: trim the padding it added.
+    tmp = Path(tempfile.mkstemp(suffix=".mp3", dir=str(out_path.parent))[1])
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(work / "voice.wav"),
+         "-af", "atrim=start=0.4,areverse,atrim=start=2.0,areverse",
+         "-ar", "44100", "-ac", "1", "-b:a", "128k", str(tmp)])
+    if tmp.stat().st_size < MIN_AUDIO_BYTES:
+        tmp.unlink()
+        raise SystemExit("the local voice made no audio for %r" % said[:60])
+    tmp.replace(out_path)
+    return out_path
+
+
 def synthesise(text, voice, out_path, api_key):
     """Speak `text` to `out_path`. Returns the path. Overwrites whatever was there."""
     said = spoken(voice.brand, text)
+    if voice.provider == "local":
+        return synthesise_local(said, voice, out_path)
     if voice.provider == "openai":
         body = json.dumps({
             "model": OPENAI_MODEL,
