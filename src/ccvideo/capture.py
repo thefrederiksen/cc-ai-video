@@ -267,10 +267,13 @@ def capture(page, audio, out, start, end, width, height, fps=30, workers=1,
                 parts.sort()
         joined = work / ("joined" + out.suffix)
         _join(parts, audio, joined, start, end)
-        if loudness is not None:
+        if loudness:
             from .generate.assemble import normalise_loudness
+            from .level import measure as measure_level
             normalise_loudness(joined, loudness, encode)
-            print("  levelled to %.1f LUFS" % loudness)
+            # Say what it IS, measured, not what was asked for - and normalise_loudness does
+            # nothing at all to audio that already arrived at the number.
+            print("  published at %.1f LUFS, true peak %s dBTP" % measure_level(joined))
         _check(joined, frames, fps)
         os.replace(str(joined), str(out))
     finally:

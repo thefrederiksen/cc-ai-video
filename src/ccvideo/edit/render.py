@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .. import cues as cuelib
 from .. import subtitles, targets, words as wordlib
+from ..level import publish_chain
 from ..shell import duration, run
 
 
@@ -92,6 +93,10 @@ def render_clip(project, clip, index, out_path, target, level_db=-16.0, frame=No
     # turns into a thumbnail, and it came out empty, while the closing fade is precisely
     # what once ate a short's final word. So fade the joins, not the ends.
     fade = min(targets.JOIN_FADE, seconds / 6.0)
+    # STAGING, NOT PUBLISHING. level_db brings takes recorded on different days to a common
+    # level before the join; the published level is set ONCE on the finished file, by
+    # measurement, in _finish() - see level.py. Do not reach for the published number here:
+    # confusing an internal reference with a publishing level is how four numbers got loose.
     chain = ["aresample=%s" % encode["sample_rate"],
              "loudnorm=I=%.1f:TP=-1.5:LRA=11" % level_db]
     if fade_in:
@@ -286,10 +291,11 @@ def _finish(joined, out_path, target, total, ass, plate=None, box=None):
         stage += ";[base]subtitles='%s'[v]" % subtitles.ass_path_for_filter(ass)
     else:
         stage += ";[base]null[v]"
-    if target["loudness"] is not None:
-        audio = "%sloudnorm=I=%.1f:TP=-1.5:LRA=11[a]" % (audio_in, target["loudness"])
-    else:
-        audio = "%sanull[a]" % audio_in
+    # LEVELLED ONCE, BY MEASUREMENT, AND ONLY IF IT IS NOT ALREADY THERE. A narration that
+    # arrived at the published level is passed through untouched - re-levelling it is the second
+    # pass that overshot the ceiling. See level.py for what this replaced and why.
+    chain = publish_chain(joined, target["loudness"]) if target["loudness"] else None
+    audio = "%s%s[a]" % (audio_in, chain or "anull")
     run(["ffmpeg", "-y", "-loglevel", "error"] + inputs
         + ["-filter_complex", stage + ";" + audio, "-map", "[v]", "-map", "[a]"]
         + targets.video_args(encode) + targets.audio_args(encode)
@@ -313,6 +319,10 @@ def render_audio_clip(project, clip, out_path, target, level_db=-16.0,
     encode = target["encode"]
     seconds = clip["end"] - clip["start"]
     fade = min(targets.JOIN_FADE, seconds / 6.0)
+    # STAGING, NOT PUBLISHING. level_db brings takes recorded on different days to a common
+    # level before the join; the published level is set ONCE on the finished file, by
+    # measurement, in _finish() - see level.py. Do not reach for the published number here:
+    # confusing an internal reference with a publishing level is how four numbers got loose.
     chain = ["aresample=%s" % encode["sample_rate"],
              "loudnorm=I=%.1f:TP=-1.5:LRA=11" % level_db]
     if fade_in:
@@ -380,9 +390,9 @@ def render_narration(project, out_path, target, captions="full", corrections=(),
     codec = list(NARRATION_SUFFIXES[out_path.suffix.lower()])
     if out_path.suffix.lower() == ".m4a":
         codec += ["-b:a", encode["audio_kbps"]]
-    level = []
-    if target["loudness"] is not None:
-        level = ["-af", "loudnorm=I=%.1f:TP=-1.5:LRA=11" % target["loudness"]]
+    # Levelled once, by measurement, and only if the join is not already at the number.
+    chain = publish_chain(joined, target["loudness"]) if target["loudness"] else None
+    level = ["-af", chain] if chain else []
     run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(joined)] + level
         + ["-ar", encode["sample_rate"], "-ac", encode["channels"]] + codec
         + ["-t", "%.3f" % total, str(out_path)])

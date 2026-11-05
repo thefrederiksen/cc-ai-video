@@ -78,9 +78,16 @@ def _add_tutorial(sub):
                    help="report when a script has more title cards than this")
     p.add_argument("--words-policy", default="default",
                    help="which of the brand's word policies applies to this script")
-    p.add_argument("--loudness", type=float, default=None,
-                   help="level the finished file to this LUFS (try -14 for YouTube). Off by "
-                        "default, so a render stays byte-for-byte reproducible")
+    # NOT A NUMBER TO TYPE. It is the owner's voice and there is one level it is published at
+    # (targets.PUBLISHED_LUFS). A seat typing a level by hand on 5 Nov 2026 - because nothing
+    # here supplied one - put a finished video about 6 dB over the master and took three renders
+    # to find that out. So this now defaults to the published level and nobody has to guess; it
+    # stays overridable only for measuring, which is what --loudness 0 is for.
+    p.add_argument("--loudness", type=float, default=targets.PUBLISHED_LUFS,
+                   help="the LUFS the finished file is published at. Defaults to %g, which is "
+                        "THE level - pass a different one only when measuring, and 0 to skip "
+                        "levelling entirely and keep the render byte-for-byte reproducible"
+                        % targets.PUBLISHED_LUFS)
     p.set_defaults(run=_tutorial)
 
 
@@ -141,12 +148,15 @@ def _tutorial(args):
 
     timings, total = assemble(doc, str(shots), out, brand, target, voice, build,
                               allow_synthesis=not args.no_tts, on_segment=report)
-    if args.loudness is not None:
+    if args.loudness:
         from .generate.assemble import normalise_loudness
+        from .level import measure as measure_level
         from .shell import duration as measure
         normalise_loudness(out, args.loudness, target["encode"])
         total = measure(out)
-        print("  levelled to %.1f LUFS" % args.loudness)
+        # Say what it IS, measured, not what was asked for. The same request for a -1.5 dBTP
+        # ceiling produced +0.3, -0.5 and -4.20 on three renders, and only a measurement caught it.
+        print("  published at %.1f LUFS, true peak %s dBTP" % measure_level(out))
     timings_path = write_timings(timings, out.parent / ("%s-timings.txt" % out.stem))
     print("\noutput  : %s" % out)
     print("timings : %s" % timings_path)

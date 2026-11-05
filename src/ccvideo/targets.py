@@ -107,29 +107,53 @@ PROFILES = {
     },
 }
 
+# ---------------------------------------------------------------- THE ONE LOUDNESS
+
+# EVERY TARGET PUBLISHES AT THE SAME LEVEL, AND IT IS NOT A PARAMETER. The owner's ruling,
+# 5 November 2026, after he listened to a video of his own voice and said it was too loud.
+#
+# It was. Four numbers were in play and nothing reconciled them: the narration tool mastered at
+# -23 LUFS, this table said -14 for three targets, -16 for narration and NOTHING for the two
+# tutorial targets, and the quality gate passed only -20 to -11 LUFS - so audio at the master's
+# own level failed its own check for being too QUIET. With no number to go on, the seat building
+# that video typed one by hand. It guessed about 6 dB over the master and took three renders.
+#
+# -18 LUFS is within a third of a decibel of the one video of his voice he has listened to,
+# approved and published: it measures -17.7 LUFS, true peak -0.5 dBTP. The platforms normalise
+# to roughly -14 and turn louder uploads DOWN rather than quiet ones up, so -18 is played as
+# delivered and nothing of his is squeezed. A FOOTAGE video with a music bed also publishes
+# here; if footage ever wants its own louder number, that is a second decision and his to make.
+PUBLISHED_LUFS = -18.0
+# The ceiling. HELD by measurement, never merely requested - see level.py, which explains what
+# asking for it got us.
+PUBLISHED_TP = -1.5
+# What the gate allows around the number. Wide enough for a lossy encode and the limiter's own
+# few tenths, narrow enough that a guessed level cannot pass.
+PUBLISHED_BAND = 1.5
+
 # Where a finished file is going, and what that place expects.
 TARGETS = {
     "youtube": {"size": "desktop", "profile": "footage", "captions": "full",
-                "loudness": -14.0, "max_seconds": None},
+                "loudness": PUBLISHED_LUFS, "max_seconds": None},
     # 1080p at master quality: dark gradients with glow show banding at the footage CRF.
     "youtube-master": {"size": "desktop", "profile": "master", "captions": "full",
-                       "loudness": -14.0, "max_seconds": None},
+                       "loudness": PUBLISHED_LUFS, "max_seconds": None},
     "youtube-uhd": {"size": "uhd", "profile": "master", "captions": "full",
-                    "loudness": -14.0, "max_seconds": None},
+                    "loudness": PUBLISHED_LUFS, "max_seconds": None},
     "shorts": {"size": "phone", "profile": "footage", "captions": "centre",
-               "loudness": -14.0, "max_seconds": 60.0},
+               "loudness": PUBLISHED_LUFS, "max_seconds": 60.0},
     "linkedin": {"size": "phone", "profile": "footage", "captions": "strip",
-                 "loudness": -14.0, "max_seconds": 600.0},
+                 "loudness": PUBLISHED_LUFS, "max_seconds": 600.0},
     # The narrated slideshow, in both shapes. These two are what the assembler builds.
     "tutorial-desktop": {"size": "desktop", "profile": "stills", "captions": "full",
-                         "loudness": None, "max_seconds": None},
+                         "loudness": PUBLISHED_LUFS, "max_seconds": None},
     "tutorial-phone": {"size": "phone", "profile": "stills", "captions": "full",
-                       "loudness": None, "max_seconds": None},
+                       "loudness": PUBLISHED_LUFS, "max_seconds": None},
     # A narration track: voice takes cut and joined, no picture. Written as .wav or .m4a with
     # an .srt sidecar built from the same word timings as the cuts. The pictures go on
     # afterwards, timed to it.
     "narration": {"size": None, "profile": "voice", "captions": "full",
-                  "loudness": -16.0, "max_seconds": None, "audio_only": True},
+                  "loudness": PUBLISHED_LUFS, "max_seconds": None, "audio_only": True},
 }
 
 

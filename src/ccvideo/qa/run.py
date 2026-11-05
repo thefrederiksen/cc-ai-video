@@ -18,24 +18,16 @@ import os
 import re
 from pathlib import Path
 
+from .. import targets
 from ..shell import probe, run_capture_stderr
 
 SPEECH_PASS = 0.80
 SPEECH_WARN = 0.65
 
 
-def loudness(path):
-    """(integrated LUFS, true peak dBTP). Raises if ffmpeg produced no measurement, because an
-    unmeasured file must never read as a quiet one."""
-    log = run_capture_stderr(["ffmpeg", "-v", "info", "-i", str(path),
-                              "-af", "ebur128=peak=true", "-f", "null", "-"])
-    integrated = [float(m) for m in re.findall(r"I:\s+(-?[\d.]+) LUFS", log)]
-    peaks = [float(m) for m in re.findall(r"Peak:\s+(-?[\d.]+) dBFS", log)]
-    if not integrated:
-        raise SystemExit(
-            "ebur128 reported no integrated loudness for %s. That is a broken measurement, "
-            "not a quiet file, so this stops rather than passing it." % path)
-    return integrated[-1], (peaks[-1] if peaks else None)
+# The gate measures with the SAME instrument the levelling uses. Two copies of this drifting
+# apart is how a file could be levelled correctly and fail its own check.
+from ..level import measure as loudness
 
 
 def silences(path, threshold_db=-40, minimum=2.5):
@@ -246,13 +238,26 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
     else:
         skip("DRIFT", "the container reports no separate audio duration to compare")
 
-    # AUDIO - a level the platforms play well, no clipping, no dead stretch.
+    # AUDIO - THE level, the ceiling, and no dead stretch.
+    #
+    # This check used to pass anything from -20 to -11 LUFS with a peak under -0.1 dBTP, and
+    # that band was the problem rather than the measure of it: the owner's narration masters
+    # quieter than -20, so correctly levelled audio FAILED here for being too quiet, while a
+    # file 6 dB over his master sailed through. He has since set one number - see
+    # targets.PUBLISHED_LUFS - so the band is now that number plus or minus PUBLISHED_BAND, and
+    # the ceiling checked is the real one rather than merely "not clipped".
+    #
+    # With no --target there is no number to check against, so this does NOT fall back to a
+    # wide band and call it a pass: it says which number it used.
     lufs, peak = loudness(video)
     quiet = silences(video)
-    ok = -20 <= lufs <= -11 and (peak is None or peak <= -0.1) and not quiet
+    want = (target or {}).get("loudness") or targets.PUBLISHED_LUFS
+    ceiling = targets.PUBLISHED_TP
+    band = targets.PUBLISHED_BAND
+    ok = abs(lufs - want) <= band and (peak is None or peak <= ceiling) and not quiet
     record("AUDIO", ok,
-           "%.1f LUFS, peak %s dBTP, silences over 2.5s: %s"
-           % (lufs, peak, quiet or "none"))
+           "%.1f LUFS against %g +/-%g, true peak %s dBTP against a %g ceiling, silences over "
+           "2.5s: %s" % (lufs, want, band, peak, ceiling, quiet or "none"))
 
     # SPEECH - the hear-back. This is the check that matters.
     if not speech:
@@ -271,7 +276,6 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
                "%d%% of the script's words heard back out of the render" % round(ratio * 100),
                warn=SPEECH_WARN <= ratio < SPEECH_PASS)
 
-        from .. import targets
         verdict, detail = tail_check(video, spoken_from_script(script_path), model,
                                      targets.JOIN_FADE if fade is None else fade)
         results.append({"check": "TAIL", "result": verdict, "detail": detail})

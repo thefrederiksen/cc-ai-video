@@ -29,6 +29,7 @@ from PIL import Image
 
 from .. import targets
 from ..draw import render_card
+from ..level import publish_chain
 from ..narrate import speak
 from ..shell import duration, run, stream_frames
 
@@ -199,20 +200,23 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
 def normalise_loudness(path, lufs, encode):
     """Bring a finished file to a target loudness, IN PLACE, without touching the picture.
 
-    This is opt-in, and the default is off, for one reason: the assembler is byte-for-byte
-    deterministic and that is what makes it possible to prove a change to it changed nothing.
-    Silently adding a pass here would end that.
+    The assembler does no levelling of its own, and a shipped short measured -23.3 LUFS -
+    about five decibels under the one level this factory publishes at, so it played noticeably
+    quieter than everything around it in a feed. The video stream is copied, so the picture is
+    untouched and only the audio is re-encoded; chapters are carried across explicitly, because
+    a re-mux that drops them is the classic way this goes wrong.
 
-    It is worth turning on. The assembler does no levelling of its own, and a shipped short
-    measured -23.3 LUFS - roughly nine decibels under what the platforms normalise to, so it
-    plays noticeably quieter than everything around it in a feed. The video stream is copied,
-    so the picture is untouched and only the audio is re-encoded; chapters are carried across
-    explicitly, because a re-mux that drops them is the classic way this goes wrong.
+    ONE FIXED GAIN, FOUND BY MEASUREMENT, with the ceiling held - and NOTHING AT ALL if the
+    audio is already at the number, which is the case for a video built on a narration. That
+    no-op keeps the assembler's byte-for-byte determinism where it used to be lost. See level.py.
     """
     path = Path(path)
+    chain = publish_chain(path, lufs)
+    if chain is None:
+        return path
     temp = path.with_name(path.stem + ".levelled" + path.suffix)
     run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(path),
-         "-af", "loudnorm=I=%.1f:TP=-1.5:LRA=11" % lufs,
+         "-af", chain,
          "-c:v", "copy", "-map_chapters", "0", "-map_metadata", "0",
          "-c:a", "aac", "-b:a", encode["audio_kbps"],
          "-ar", encode["sample_rate"], "-ac", encode["channels"],
