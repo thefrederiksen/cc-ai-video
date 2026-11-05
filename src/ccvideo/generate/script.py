@@ -17,8 +17,12 @@ A script is one image or card plus one block of spoken text, repeated:
     TEXT:
     More words.
 
-THREE SEGMENT KINDS, and the third is why this module exists
+FOUR SEGMENT KINDS, and the third is why this module exists
     IMAGE: <file>   a real frame
+    IMAGE: <clip>   a recorded screen clip (.mp4 .mov .mkv .webm .m4v), played under the
+                    narration and FITTED to it (see generate/fit.py). Optional lines:
+                      CLIP-START: 2.5    seconds into the clip where the part that matters starts
+                      CLIP-END: 11       ... and where it ends
     IMAGE: CARD     a title card drawn for the VIEWER
     IMAGE: SHOT     a placeholder for footage not yet captured, drawn for the PERSON HOLDING
                     THE CAMERA, carrying a SHOT: line describing what to film
@@ -59,12 +63,22 @@ CJK_CPM = 265.0
 
 DEFAULT_CARD_ADVICE = 3     # cards above this are reported: they are runtime with no product
 
+# An IMAGE: naming one of these is a clip, not a still.
+CLIP_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".m4v")
+
+
+def is_clip(name):
+    return os.path.splitext(name)[1].lower() in CLIP_EXTENSIONS
+
 
 class Segment:
     def __init__(self, sid):
         self.id = sid
-        self.kind = None            # "image" | "card" | "shot"
-        self.image = None           # the file, for kind == "image"
+        self.kind = None            # "image" | "clip" | "card" | "shot"
+        self.image = None           # the file, for kind == "image" or "clip"
+        self.clip_start = None      # seconds into the clip, for kind == "clip"
+        self.clip_end = None
+        self.audio = None           # the pre-made narration file (AUDIO: line), if one is named
         self.card = None            # [kicker, title, sub], for kind == "card"
         self.shot = None            # what to film, for kind == "shot"
         self.chapter = None
@@ -96,7 +110,9 @@ def parse(path):
     are left to lint(), so a caller can see every one of them at once."""
     segments, cur, mode = [], None, None
     title = footer = ""
-    with open(path, "r", encoding="utf-8") as fh:
+    # utf-8-sig: a script saved by Windows PowerShell starts with a byte-order mark, which
+    # hid its '# TITLE:' line from the parser and stopped the build with "no TITLE".
+    with open(path, "r", encoding="utf-8-sig") as fh:
         for raw in fh:
             line = raw.rstrip("\n")
             if cur is None and line.startswith("# FOOTER:"):
@@ -123,7 +139,22 @@ def parse(path):
                 elif value == "SHOT":
                     cur.kind = "shot"
                 else:
-                    cur.kind, cur.image = "image", value
+                    cur.kind, cur.image = ("clip" if is_clip(value) else "image"), value
+                mode = None
+            elif line.startswith("CLIP-START:") or line.startswith("CLIP-END:"):
+                name, value = line.split(":", 1)
+                try:
+                    seconds = float(value.strip())
+                except ValueError:
+                    raise SystemExit("segment %s: %s wants seconds, not %r"
+                                     % (cur.id, name, value.strip()))
+                if name == "CLIP-START":
+                    cur.clip_start = seconds
+                else:
+                    cur.clip_end = seconds
+                mode = None
+            elif line.startswith("AUDIO:"):
+                cur.audio = line.split(":", 1)[1].strip()
                 mode = None
             elif line.startswith("CARD:"):
                 parts = line.split(":", 1)[1].split("|")
@@ -190,9 +221,26 @@ def lint(script, shots_dir, brand, card_advice=DEFAULT_CARD_ADVICE, publish=Fals
                 warn(seg.id, "narration trips the %r word policy: %s"
                      % (words_policy, ", ".join(hits)))
 
+        if seg.kind != "clip" and (seg.clip_start is not None or seg.clip_end is not None):
+            error(seg.id, "has CLIP-START/CLIP-END but its IMAGE is not a clip")
         if seg.kind == "image":
             if not os.path.exists(os.path.join(shots_dir, seg.image)):
                 error(seg.id, "no such frame %r in %s" % (seg.image, shots_dir))
+        elif seg.kind == "clip":
+            path = os.path.join(shots_dir, seg.image)
+            if not os.path.exists(path):
+                error(seg.id, "no such clip %r in %s" % (seg.image, shots_dir))
+            else:
+                from ..shell import probe
+                length = probe(path)["duration"]
+                start = seg.clip_start or 0.0
+                end = seg.clip_end if seg.clip_end is not None else length
+                if start < 0 or end <= start:
+                    error(seg.id, "CLIP-START %.2f / CLIP-END %.2f is not a forward range"
+                          % (start, end))
+                elif end > length + 0.05:
+                    error(seg.id, "CLIP-END %.2f is past the end of %s (%.2fs)"
+                          % (end, seg.image, length))
         elif seg.kind == "card":
             if not seg.card:
                 error(seg.id, "is a CARD with no 'CARD:' line")

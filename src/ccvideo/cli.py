@@ -59,7 +59,22 @@ def _add_tutorial(sub):
     p.add_argument("--brands", default="", help="JSON file of extra or replacement brands")
     p.add_argument("--size", default="desktop", choices=sorted(targets.SIZES),
                    help="desktop 1920x1080 or phone 1080x1920")
-    p.add_argument("--tts", default="openai", choices=["openai", "elevenlabs", "local"])
+    p.add_argument("--tts", default="", choices=["", "openai", "elevenlabs", "local"],
+                   help="who voices the narration (default openai); not with --audio")
+    p.add_argument("--audio", default="",
+                   help="a folder of PRE-MADE narration, one file per segment (001.wav, or the "
+                        "segment's AUDIO: line). Each is timed by its own transcript and only "
+                        "its speech is used. Nothing is synthesised")
+    p.add_argument("--narration", default="",
+                   help="ONE continuous recording of the whole script. Transcribed once and "
+                        "split at the pause between segments by matching each segment's TEXT "
+                        "to the heard words; a segment whose text is not found stops the build")
+    p.add_argument("--captions", action="store_true",
+                   help="burn the segment TEXT into a strip under the picture, timed by the "
+                        "heard words, and write the same captions as an .srt beside the mp4")
+    p.add_argument("--clip-speed-cap", type=float, default=2.0,
+                   help="fastest a clip may be played to fit its narration (default 2.0); "
+                        "past it the clip's end is trimmed, and the build says so")
     p.add_argument("--voice-budget", type=float, default=0,
                    help="--tts local: after this many seconds stop and exit 3 (PARTIAL) - on the "
                         "rented GPU the pod keeps voicing and the same command run again picks "
@@ -129,13 +144,33 @@ def _tutorial(args):
 
     out = Path(args.out).resolve()
     build = Build(Path(args.work).resolve() if args.work else out.parent / "build")
-    voice = Voice(brand, args.tts, args.voice or None, args.el_model or None,
-                  budget=args.voice_budget or None)
-
-    todo = sum(1 for s in doc.segments
-               if not cached(cache_path(build.audio, s.id, s.text, voice)))
-    print("voice   : %s" % voice.describe())
-    print("brand   : %s, %s %dx%d" % (args.brand, args.size, target["width"], target["height"]))
+    audio_dir = narration = None
+    if args.audio and args.narration:
+        raise SystemExit("--audio (one file per segment) and --narration (one recording) are "
+                         "two ways to supply the same voice; pass one")
+    if args.audio or args.narration:
+        if args.tts or args.voice or args.el_model or args.voice_budget or args.no_tts:
+            raise SystemExit("--audio and --narration use a voice made elsewhere; they take no "
+                             "--tts, --voice, --el-model, --voice-budget or --no-tts")
+        voice, todo = None, 0
+    if args.audio:
+        audio_dir = Path(args.audio).resolve()
+        if not audio_dir.is_dir():
+            raise SystemExit("--audio is not a directory: %s" % audio_dir)
+        print("voice   : pre-made files in %s, timed by their transcripts" % audio_dir)
+    elif args.narration:
+        narration = Path(args.narration).resolve()
+        if not narration.is_file():
+            raise SystemExit("--narration is not a file: %s" % narration)
+        print("voice   : one recording %s, split at the pauses between segments" % narration)
+    else:
+        voice = Voice(brand, args.tts or "openai", args.voice or None, args.el_model or None,
+                      budget=args.voice_budget or None)
+        todo = sum(1 for s in doc.segments
+                   if not cached(cache_path(build.audio, s.id, s.text, voice)))
+        print("voice   : %s" % voice.describe())
+    print("brand   : %s, %s %dx%d%s" % (args.brand, args.size, target["width"],
+                                       target["height"], ", captions" if args.captions else ""))
     print("script  : %d segments, %d needing voice" % (len(doc.segments), todo))
     if todo and not args.no_tts:
         # The owner's voice on a rented GPU: every missing segment on ONE pod, not one pod each.
@@ -147,7 +182,9 @@ def _tutorial(args):
                                       "  [voiced]" if synthesised else ""))
 
     timings, total = assemble(doc, str(shots), out, brand, target, voice, build,
-                              allow_synthesis=not args.no_tts, on_segment=report)
+                              allow_synthesis=not args.no_tts, on_segment=report,
+                              audio_dir=audio_dir, captions=args.captions,
+                              max_speed=args.clip_speed_cap, narration=narration)
     if args.loudness:
         from .generate.assemble import normalise_loudness
         from .level import measure as measure_level

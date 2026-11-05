@@ -55,14 +55,80 @@ re-buys the whole video. On a long script that is thousands of words of speech.
 `--no-tts` renders from cache only and fails if anything is missing. Use it whenever you are
 testing the assembly rather than the writing.
 
-### The three segment kinds
+### The four segment kinds
 
-`IMAGE: <file>` a real frame. `IMAGE: CARD` a card for the viewer. `IMAGE: SHOT` a placeholder
-for footage nobody has filmed yet, carrying a `SHOT:` line describing what to capture.
+`IMAGE: <file>` a real frame. `IMAGE: <clip>.mp4` a recorded screen clip (also .mov .mkv
+.webm .m4v). `IMAGE: CARD` a card for the viewer. `IMAGE: SHOT` a placeholder for footage
+nobody has filmed yet, carrying a `SHOT:` line describing what to capture.
 
 Use `SHOT` for anything you are standing in for. Do not fake it with a `CARD` - a walkthrough
 once shipped 53 percent placeholder cards because nothing could tell the two apart. Pass
 `--publish` on any render meant for an audience; it refuses to contain a `SHOT`.
+
+### Clips under a narration (capture and voice made separately, merged here)
+
+```
+=== SEG 005
+IMAGE: 05-event-log.mp4
+CLIP-START: 2.5        # optional: the part of the clip that matters
+CLIP-END: 14
+AUDIO: 005-take2.wav   # optional: only with --audio, when the file is not named 005.*
+TEXT:
+The words the narrator says.
+```
+
+The NARRATION IS THE MASTER and is never cut to fit the picture. The clip bends instead:
+
+* **shorter than its narration** - plays at its own speed, then HOLDS ITS LAST FRAME to the end.
+  Never loops.
+* **longer** - plays faster, by exactly enough to land on the end, up to `--clip-speed-cap`
+  (default 2.0).
+* **still longer at the cap** - plays at the cap and its END IS TRIMMED. The build prints a
+  `TRIMMED segment ...` line. Fix it with a `CLIP-END`, or more narration - do not ignore it.
+
+The timings file shows each clip's fit (`CLIP 05-event-log.mp4 x1.68`, `hold 2.1s`,
+`TRIMMED 3.0s`). A clip's own sound is not used.
+
+**Pre-made voice (`--audio DIR`).** When the voice is made elsewhere (the owner's trained voice
+runs on the Mac mini GPU), put ONE FILE PER SEGMENT in a folder - `001.wav`, `002.wav`, ... (or
+.mp3 .m4a .flac), or name one with an `AUDIO:` line - and pass `--audio DIR` instead of `--tts`.
+Each file is transcribed (the same word timings `ccvideo transcribe` makes, cached in the build
+folder and redone when the file changes) and only its SPEECH is used: whatever lead-in and tail
+the voice tool padded it with is dropped, and the assembler adds its own beat at each end. A
+segment with no file, or two, stops the build before anything renders. Nothing is synthesised
+and the voice cache is untouched.
+
+**One continuous recording (`--narration one.wav`).** The usual case: the owner reads the whole
+script in one take. The segments' TEXT, in order, must together be the script that was read.
+The recording is transcribed ONCE, the whole script is matched against the heard words, and the
+recording is cut between each pair of segments in the LONGEST PAUSE between the last word heard
+for the one and the first word heard for the next - the breath between sentences, never inside a
+word. Each segment gets its slice of the real recording (just before its first word to just after
+its last), then the fit rules above apply. A segment whose TEXT is not found (fewer than half its
+words heard) stops the build before anything renders: the TEXT was edited after the take, or a
+segment is out of order. Pass one of `--narration`, `--audio` or `--tts`, never two.
+
+```
+ccvideo tutorial --script s.txt --shots capture/ --narration voice/take.wav --captions \
+                 --loudness -14 --out out.mp4 --size desktop
+```
+
+**Captions (`--captions`).** Burns the segment TEXT - our spelling, not the transcriber's - in a
+strip of its own under the picture, so captions never cover the interface; the picture is fitted
+above the strip. Timed by the heard words of each segment's narration, built segment by segment so
+no caption spans a seam, and the same cues are written as an `.srt` beside the mp4. A segment
+whose audio does not say most of its TEXT stops the build: it is the wrong file. Works with
+`--tts` as well as `--audio`.
+
+```
+ccvideo tutorial --script s.txt --shots capture/ --audio voice/ --captions --loudness -14 \
+                 --out out.mp4 --size desktop
+```
+
+Use `--loudness -14` for LinkedIn and YouTube; a voice file made elsewhere arrives at whatever
+level its tool left it, and the QA gate wants -20 to -11 LUFS.
+
+Record the app at 125 percent browser zoom so its text still reads on a phone.
 
 ### Cards
 
