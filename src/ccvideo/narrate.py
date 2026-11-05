@@ -134,7 +134,7 @@ class Voice:
         if self.provider == "local":
             return "local %s / %s (no key%s)" % (
                 self.voice, "rented GPU via " + RENTED_COMMAND
-                if shutil.which(RENTED_COMMAND) and os.environ.get("CCVIDEO_VOICE_HERE") != "1"
+                if shutil.which(RENTED_COMMAND) and not voice_here()
                 else LOCAL_COMMAND + " on this machine",
                 ", voice budget %ds" % (self.deadline - time.time()) if self.deadline else "")
         if self.provider == "openai":
@@ -158,13 +158,18 @@ def partial(why):
     sys.exit(PARTIAL_EXIT)
 
 
+def voice_here():
+    return os.environ.get("CCVIDEO_VOICE_HERE", "").strip() == "1"
+
+
 def local_voice_where():
     """("rented", narrate) when this machine can reach the rented GPU, else ("here", soren-voice).
     Set CCVIDEO_VOICE_HERE=1 to voice on this machine even when narrate is available."""
     import platform
-    host = platform.node().split(".")[0]
+    # Lower case: macOS reports the name as the user typed it ("Devthrottle-Mac-mini.local").
+    host = platform.node().split(".")[0].lower()
     rented = shutil.which(RENTED_COMMAND)
-    if rented and os.environ.get("CCVIDEO_VOICE_HERE", "").strip() != "1":
+    if rented and not voice_here():
         return "rented", rented
     if host in NO_LOCAL_VOICING:
         raise SystemExit(
@@ -198,7 +203,10 @@ def _finish_local(work, out_path, said):
          "-ar", "44100", "-ac", "1", "-b:a", "128k", str(tmp)])
     if tmp.stat().st_size < MIN_AUDIO_BYTES:
         tmp.unlink()
-        raise SystemExit("the local voice made no audio for %r" % said[:60])
+        # Remove the wav too, or every re-run would find it "done" and fail the same way.
+        (work / "voice.wav").unlink()
+        raise SystemExit("the local voice made no audio for %r - run again to voice it afresh"
+                         % said[:60])
     tmp.replace(out_path)
     return out_path
 

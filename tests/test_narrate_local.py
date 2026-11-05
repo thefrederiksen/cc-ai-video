@@ -102,7 +102,7 @@ def test_the_budget_reaches_the_rented_gpu(tmp_path, monkeypatch):
     monkeypatch.setattr(narrate.subprocess, "run", _fake_narrate(calls))
     v = narrate.Voice(BRAND, "local", budget=300)
     narrate.prefetch_local([Seg("001", "One.")], v, tmp_path)
-    assert "--budget" in calls[0]
+    assert 290 <= int(calls[0][calls[0].index("--budget") + 1]) <= 300
 
 
 def test_a_partial_rented_run_stops_with_exit_3(tmp_path, monkeypatch):
@@ -114,15 +114,18 @@ def test_a_partial_rented_run_stops_with_exit_3(tmp_path, monkeypatch):
     assert e.value.code == narrate.PARTIAL_EXIT
 
 
-def test_the_mac_mini_never_voices_locally(monkeypatch):
+@pytest.mark.parametrize("host", ["devthrottle-mac-mini.local", "Devthrottle-Mac-mini.local"])
+def test_the_mac_mini_never_voices_locally(monkeypatch, host):
+    monkeypatch.setattr(narrate, "RENTED_COMMAND", "narrate")
     monkeypatch.setattr(narrate.shutil, "which", lambda c: "/usr/bin/" + c if c != "narrate" else None)
     import platform
-    monkeypatch.setattr(platform, "node", lambda: "devthrottle-mac-mini.local")
+    monkeypatch.setattr(platform, "node", lambda: host)
     with pytest.raises(SystemExit, match="not allowed to voice on this machine"):
         narrate.local_voice_where()
 
 
 def test_voicing_here_can_be_asked_for_where_it_is_allowed(monkeypatch):
+    monkeypatch.setattr(narrate, "RENTED_COMMAND", "narrate")
     monkeypatch.setattr(narrate.shutil, "which", lambda c: "/usr/bin/" + c)
     import platform
     monkeypatch.setattr(platform, "node", lambda: "devlinux")
@@ -130,3 +133,22 @@ def test_voicing_here_can_be_asked_for_where_it_is_allowed(monkeypatch):
     assert narrate.local_voice_where() == ("here", "/usr/bin/" + narrate.LOCAL_COMMAND)
     monkeypatch.delenv("CCVIDEO_VOICE_HERE")
     assert narrate.local_voice_where() == ("rented", "/usr/bin/narrate")
+
+
+@pytest.mark.parametrize("rc", [1, 2])
+def test_a_failed_rented_run_is_an_error_and_never_falls_back_here(tmp_path, monkeypatch, rc):
+    _rented(monkeypatch)
+    import subprocess as _sp
+    seen = []
+
+    def run(cmd, *a, **k):
+        seen.append(str(cmd[0]))
+        return _sp.CompletedProcess(cmd, rc)
+    monkeypatch.setattr(narrate.subprocess, "run", run)
+    v = narrate.Voice(BRAND, "local")
+    with pytest.raises(SystemExit) as e:
+        narrate.prefetch_local([Seg("001", "One.")], v, tmp_path)
+    assert e.value.code not in (0, narrate.PARTIAL_EXIT)
+    with pytest.raises(SystemExit):
+        narrate.synthesise_local("One.", v, tmp_path / "seg-001-x.mp3")
+    assert seen and all(c.endswith("narrate") for c in seen)
