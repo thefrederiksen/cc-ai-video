@@ -33,6 +33,8 @@ AUDIO_EXTENSIONS = (".wav", ".mp3", ".m4a", ".flac", ".aac", ".ogg")
 LEAD_MARGIN = 0.15      # seconds kept before the first heard word
 TAIL_MARGIN = 0.35      # ... and after the last: a transcriber ends a word a little early
 MIN_MATCH = 0.5         # the share of written words that must be heard in a segment's file
+MIN_PAUSE = 0.25        # a shorter gap between two segments is the gap between two words,
+                        # not a breath between sentences: a cut there would clip speech
 
 
 def find_audio(segment, audio_dir):
@@ -170,6 +172,13 @@ def split_narration(segments, heard, length):
     for k in range(len(segments) - 1):
         i, j = max(found[k]), min(found[k + 1])
         m = max(range(i, j), key=lambda x: heard[x + 1]["start"] - heard[x]["end"])
+        gap = heard[m + 1]["start"] - heard[m]["end"]
+        if gap < MIN_PAUSE:
+            raise SystemExit(
+                "segments %s and %s: the longest pause between them in the narration is %.2fs, "
+                "too short to cut in without clipping a word (at least %.2fs is needed). "
+                "Re-record with a breath between them, or make them one segment. Nothing was "
+                "rendered." % (segments[k].id, segments[k + 1].id, gap, MIN_PAUSE))
         last.append(m)
         first.append(m + 1)
     last.append(len(heard) - 1)
@@ -177,7 +186,10 @@ def split_narration(segments, heard, length):
     out, previous_cut = [], 0.0
     for k in range(len(segments)):
         a, b = first[k], last[k]
-        cut = ((heard[b]["end"] + heard[b + 1]["start"]) / 2.0
+        # The cut favours the tail: a transcriber ends a word early, but starts one on time,
+        # so the next segment keeps only its lead margin and the rest of the pause is tail.
+        cut = (max((heard[b]["end"] + heard[b + 1]["start"]) / 2.0,
+                   heard[b + 1]["start"] - LEAD_MARGIN)
                if k + 1 < len(segments) else length)
         start = max(previous_cut, heard[a]["start"] - LEAD_MARGIN)
         end = min(cut, heard[b]["end"] + TAIL_MARGIN)

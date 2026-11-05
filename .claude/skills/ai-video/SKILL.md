@@ -106,7 +106,11 @@ for the one and the first word heard for the next - the breath between sentences
 word. Each segment gets its slice of the real recording (just before its first word to just after
 its last), then the fit rules above apply. A segment whose TEXT is not found (fewer than half its
 words heard) stops the build before anything renders: the TEXT was edited after the take, or a
-segment is out of order. Pass one of `--narration`, `--audio` or `--tts`, never two.
+segment is out of order. Two segments read with no breath between them (a pause under 0.25 s)
+also stop the build, naming the pair: a cut there would clip a word. Re-record with a breath, or
+make them one segment. `--only` works: the recording is still split against every segment in the
+script, so a segment left out is never heard under its neighbour. Pass one of `--narration`,
+`--audio` or `--tts`, never two.
 
 ```
 ccvideo tutorial --script s.txt --shots capture/ --narration voice/take.wav --captions \
@@ -116,9 +120,12 @@ ccvideo tutorial --script s.txt --shots capture/ --narration voice/take.wav --ca
 **Captions (`--captions`).** Burns the segment TEXT - our spelling, not the transcriber's - in a
 strip of its own under the picture, so captions never cover the interface; the picture is fitted
 above the strip. Timed by the heard words of each segment's narration, built segment by segment so
-no caption spans a seam, and the same cues are written as an `.srt` beside the mp4. A segment
-whose audio does not say most of its TEXT stops the build: it is the wrong file. Works with
-`--tts` as well as `--audio`.
+no caption spans a seam or is held over the next segment, and the same cues are written as an
+`.srt` beside the mp4. Type is sized by the frame's short side, and a line too wide for a phone
+frame wraps. Works with `--tts` as well as `--audio`.
+
+With `--audio`, a segment whose file does not say most of its TEXT stops the build before that
+segment renders, captions or not: it is the wrong file.
 
 ```
 ccvideo tutorial --script s.txt --shots capture/ --audio voice/ --captions --loudness -14 \

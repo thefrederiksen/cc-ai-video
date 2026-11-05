@@ -181,6 +181,85 @@ def test_a_segment_whose_text_is_not_in_the_recording_stops_the_build(tmp_path):
         split_narration(doc.segments, heard, 2.5)
 
 
+THREE = ("=== SEG 001\nIMAGE: a.png\nTEXT:\nOpen the projects page.\n"
+         "=== SEG 002\nIMAGE: a.png\nTEXT:\nThis segment was removed.\n"
+         "=== SEG 003\nIMAGE: a.png\nTEXT:\nThen click New project.\n")
+THREE_HEARD = [("Open", 0.5, 0.8), ("the", 0.85, 0.95), ("projects", 1.0, 1.5), ("page.", 1.55, 1.9),
+               ("This", 2.9, 3.1), ("segment", 3.15, 3.5), ("was", 3.55, 3.7),
+               ("removed.", 3.75, 4.2),
+               ("Then", 5.2, 5.4), ("click", 5.45, 5.7), ("New", 5.75, 5.9),
+               ("project.", 5.95, 6.5)]
+
+
+def test_a_segment_left_out_is_not_heard_under_its_neighbour(tmp_path):
+    # --only 001,003 over a recording of all three: the split is made against every segment
+    # that was read, so 003's slice holds 003's words and none of 002's.
+    from ccvideo.generate.timing import split_narration
+    doc = _script(tmp_path, THREE)
+    slices = split_narration(doc.segments, _heard(THREE_HEARD), 7.0)
+    third = slices[2]
+    assert [w["word"] for w in third[2]] == ["Then", "click", "New", "project."]
+    assert third[0] > 4.2                                    # starts after 002's last word
+
+
+def test_no_pause_between_two_segments_is_a_stop(tmp_path):
+    from ccvideo.generate.timing import split_narration
+    doc = _script(tmp_path, "=== SEG 001\nIMAGE: a.png\nTEXT:\nOpen the projects page.\n"
+                            "=== SEG 002\nIMAGE: a.png\nTEXT:\nThen click New project.\n")
+    heard = _heard([("Open", 0.5, 0.8), ("the", 0.85, 0.95), ("projects", 1.0, 1.4),
+                    ("page.", 1.42, 1.5), ("Then", 1.62, 1.8), ("click", 1.85, 2.0),
+                    ("New", 2.05, 2.2), ("project.", 2.25, 2.7)])
+    with pytest.raises(SystemExit, match="segments 001 and 002"):
+        split_narration(doc.segments, heard, 3.0)
+
+
+def test_a_short_pause_keeps_the_whole_tail_of_the_last_word(tmp_path):
+    from ccvideo.generate.timing import TAIL_MARGIN, split_narration
+    doc = _script(tmp_path, "=== SEG 001\nIMAGE: a.png\nTEXT:\nOpen the projects page.\n"
+                            "=== SEG 002\nIMAGE: a.png\nTEXT:\nThen click New project.\n")
+    heard = _heard([("Open", 0.5, 0.8), ("the", 0.85, 0.95), ("projects", 1.0, 1.4),
+                    ("page.", 1.42, 1.5), ("Then", 2.0, 2.2), ("click", 2.25, 2.4),
+                    ("New", 2.45, 2.6), ("project.", 2.65, 3.1)])
+    one, two = split_narration(doc.segments, heard, 3.5)
+    assert one[0] + one[1] >= 1.5 + TAIL_MARGIN - 1e-9       # the tail is not clipped
+    assert one[0] + one[1] <= two[0] < 2.0                   # and the next keeps its lead
+
+
+# ------------------------------------------------------------------ the caption file
+
+def _srt_spans(path):
+    def seconds(stamp):
+        h, m, rest = stamp.strip().split(":")
+        s, ms = rest.split(",")
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+    return [tuple(seconds(part) for part in line.split("-->"))
+            for line in path.read_text(encoding="utf-8").splitlines() if "-->" in line]
+
+
+def test_a_brief_last_caption_does_not_run_over_the_next_segment(tmp_path):
+    # Segment A ends 0.10 s after its last word; the hold that makes a short cue readable must
+    # stop at A's end, not carry "Done." over B's first frames.
+    from ccvideo.generate.assemble import write_captions
+    first = [{"start": 2.0, "end": 2.4, "word": "All"}, {"start": 2.45, "end": 3.0, "word": "Done."}]
+    second = [{"start": 3.5, "end": 3.9, "word": "Next"}, {"start": 4.0, "end": 4.6, "word": "step."}]
+    srt = tmp_path / "c.srt"
+    write_captions([(first, 3.10), (second, 5.5)], 5.5, {"width": 1920, "height": 1080},
+                   tmp_path / "c.ass", srt)
+    spans = _srt_spans(srt)
+    assert spans and all(end <= 3.10 for start, end in spans if start < 3.10)
+
+
+def test_phone_captions_are_sized_for_the_width_and_wrap(tmp_path):
+    from ccvideo.generate.assemble import write_captions
+    words = [{"start": 0.5 + 0.3 * k, "end": 0.75 + 0.3 * k, "word": w}
+             for k, w in enumerate("Schema Studio works out what the objects are.".split())]
+    ass = tmp_path / "c.ass"
+    write_captions([(words, 4.0)], 4.0, {"width": 1080, "height": 1920}, ass, tmp_path / "c.srt")
+    text = ass.read_text(encoding="utf-8")
+    assert "WrapStyle: 0" in text
+    assert "Style: Cap,Segoe UI Black,52," in text            # 52/1080 of the SHORT side
+
+
 # ------------------------------------------------------------------ the render
 
 TARGET = {"width": 320, "height": 180,

@@ -127,6 +127,7 @@ def _tutorial(args):
             raise SystemExit("the script has errors; nothing was synthesised or rendered")
         print("")
 
+    every_segment = list(doc.segments)
     if args.only:
         wanted = {s.strip().zfill(3) for s in args.only.split(",")}
         doc.segments = [s for s in doc.segments if s.id in wanted]
@@ -184,7 +185,8 @@ def _tutorial(args):
     timings, total = assemble(doc, str(shots), out, brand, target, voice, build,
                               allow_synthesis=not args.no_tts, on_segment=report,
                               audio_dir=audio_dir, captions=args.captions,
-                              max_speed=args.clip_speed_cap, narration=narration)
+                              max_speed=args.clip_speed_cap, narration=narration,
+                              read_segments=every_segment)
     if args.loudness:
         from .generate.assemble import normalise_loudness
         from .level import measure as measure_level

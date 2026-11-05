@@ -232,7 +232,7 @@ def write_chapters(segments, timings, path):
 
 def assemble(script, shots_dir, out_path, brand, target, voice, build,
              allow_synthesis=True, on_segment=None, audio_dir=None, captions=False,
-             max_speed=None, words_model="base.en", narration=None):
+             max_speed=None, words_model="base.en", narration=None, read_segments=None):
     """Build the whole video. Returns (timings, total seconds).
 
     `on_segment` is called with (segment, seconds, label, was_synthesised) as each one lands,
@@ -240,7 +240,10 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
 
     `audio_dir` takes the narration from pre-made files, one per segment, instead of `voice`;
     `narration` takes it from ONE continuous recording, split at the pauses between segments
-    by matching each segment's TEXT to the heard words (see generate/timing.py). `captions` burns the segment TEXT into a strip under the picture,
+    by matching each segment's TEXT to the heard words (see generate/timing.py).
+    `read_segments` is every segment that was READ into that recording, when only some of them
+    are built (--only): the split is made against all of them, so the speech of a segment left
+    out never lands in a neighbour's slice. `captions` burns the segment TEXT into a strip under the picture,
     timed by the narration's heard words, and writes the same cues as an .srt beside the mp4.
     `max_speed` caps how fast a clip may be played to fit its narration (generate/fit.py).
     """
@@ -264,8 +267,9 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
     slices = {}
     if narration:
         whole = timing.heard_words(narration, words_dir, model=words_model)
-        for segment, piece in zip(script.segments, timing.split_narration(
-                script.segments, whole, timing.audio_length(narration))):
+        read = read_segments or script.segments
+        for segment, piece in zip(read, timing.split_narration(
+                read, whole, timing.audio_length(narration))):
             slices[segment.id] = piece
 
     timings, elapsed, cue_words = [], 0.0, []
@@ -284,7 +288,11 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
                                        allow_synthesis=allow_synthesis)
             if captions:
                 heard = timing.heard_words(audio, words_dir, model=words_model)
-        piece = build.segments / ("seg-%s-%s.mp4" % (stem, segment.id))
+        # A pre-made file is checked against its TEXT before it renders, captions or not: the
+        # wrong file under a segment must stop the build, not play.
+        aligned = (timing.align(segment.text, heard, segment.id)
+                   if captions or audio_dir else None)
+        piece =build.segments / ("seg-%s-%s.mp4" % (stem, segment.id))
         if segment.kind == "clip":
             seconds = segment_seconds(audio, window)
             clip_fit = fitlib.fit(duration(picture), seconds, segment.clip_start,
@@ -301,9 +309,9 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
                                      box if captions else None)
         if captions:
             shift = elapsed + LEAD_IN - (window[0] if window else 0.0)
-            cue_words.append([{"start": word["start"] + shift, "end": word["end"] + shift,
-                               "word": word["word"]}
-                              for word in timing.align(segment.text, heard, segment.id)])
+            cue_words.append(([{"start": word["start"] + shift, "end": word["end"] + shift,
+                                "word": word["word"]} for word in aligned],
+                              elapsed + seconds))
         timings.append((segment.id, elapsed, seconds, label))
         elapsed += seconds
         if on_segment:
@@ -341,25 +349,34 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
 def write_captions(segment_words, total, target, ass_path, srt_path):
     """The strip captions for a whole video: burned-in .ass and a sidecar .srt, the same cues.
 
-    `segment_words` is one list of timed words per segment. Cues are built segment by segment,
-    so a caption never runs across a seam: merged across one, the end of one picture's sentence
-    and the start of the next sat on screen together over the cut.
+    `segment_words` is one (timed words, segment end) per segment. Cues are built, held and
+    clamped segment by segment, so a caption never runs across a seam: merged across one, the
+    end of one picture's sentence and the start of the next sat on screen together over the
+    cut, and a short last cue held for reading ran over the next segment's first frames.
 
     Strip style - up to seven words, broken at punctuation and pauses - sits in the band under
     the picture. The sidecar carries exactly those cues, so what a viewer reads with the sound
     off and what a player shows from the .srt never disagree."""
     from .. import cues as cuelib
     w, h = target["width"], target["height"]
-    cues = [cue for words in segment_words for cue in cuelib.build(words, "strip")]
-    cues, dropped = cuelib.hold_into_gaps(cues, until=total)
-    for cue in dropped:
-        print("  dropped an unreadable caption fragment at %.2fs: %r"
-              % (cue["start"], cue["plain"]), flush=True)
+    cues = []
+    for words, segment_end in segment_words:
+        built = cuelib.build(words, "strip")
+        for cue in built:
+            cue["end"] = min(cue["end"], segment_end - 0.02)
+        kept, dropped = cuelib.hold_into_gaps(built, until=min(total, segment_end))
+        for cue in dropped:
+            print("  dropped an unreadable caption fragment at %.2fs: %r"
+                  % (cue["start"], cue["plain"]), flush=True)
+        cues.extend(kept)
     strip = h - picture_box(target, True)[1]
-    size = int(round(CAPTION_SIZE * h))
+    # Sized by the frame's SHORT side, so a phone frame's line fits its width as a desktop one
+    # does; a line still too long for the width wraps instead of running off the edge.
+    size = int(round(CAPTION_SIZE * min(w, h)))
     # Centre one line of type in the strip: the baseline sits a little under halfway down it.
     baseline = h - int((strip - size) / 2.0)
-    subtitles.write_ass(cues, ass_path, w, h, size=size, baseline=baseline, glow=False)
+    subtitles.write_ass(cues, ass_path, w, h, size=size, baseline=baseline, glow=False,
+                        wrap=0)
     subtitles.write_srt(cues, srt_path)
     print("  %d captions, sidecar %s" % (len(cues), Path(srt_path).name), flush=True)
     return ass_path
