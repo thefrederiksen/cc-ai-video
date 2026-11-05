@@ -17,11 +17,16 @@ Providers
                  CCVIDEO_OPENAI_KEY_NAME names instead.
     elevenlabs   the long-form narrator, and the only provider that returns exact character
                  timings for what it said. Key: ELEVENLABS_API_KEY.
-    local        the owner's own trained voice, made on this machine by the `soren-voice`
-                 command (VoxCPM2 plus his LoRA; CPU, about 23x slower than real time). No key,
-                 no cost. Slow, so a run can be given a voice budget: once it is spent, no new
-                 segment or chunk is started and the run stops with "PARTIAL" (exit 3); the SAME
-                 command run again carries on from the cache.
+    local        the owner's own trained voice (VoxCPM2 plus his LoRA). Made on a RENTED GPU by
+                 the `narrate` command when this machine has it - about real time and 5 cents a
+                 minute - and otherwise on this machine by `soren-voice` (CPU, 23-40x slower than
+                 real time). Never on this machine where that is forbidden (NO_LOCAL_VOICING).
+                 On the rented GPU every segment still missing from the cache is voiced on ONE
+                 pod, the voice loaded once: a pod costs ~6 minutes and ~9 cents to start, so one
+                 per segment would pay that seventy times for a film. With a voice budget the run
+                 waits that long, brings home what is finished and stops with "PARTIAL" (exit 3)
+                 while the pod keeps working; the SAME command run again picks that pod up. The
+                 cache key does not change with where the voice was made: it is the same voice.
 
 Keys are read at the moment of use and never written anywhere.
 """
@@ -58,6 +63,12 @@ EL_MODELS = (EL_MODEL_ID, "eleven_v4", "eleven_v4_turbo")
 EL_KEY_NAME = "ELEVENLABS_API_KEY"
 LOCAL_VOICE = "soren"
 LOCAL_COMMAND = os.environ.get("CCVIDEO_LOCAL_VOICE_COMMAND", "").strip() or "soren-voice"
+# The rented GPU. `narrate` (devthrottle_internal marketing/voice/runpod/narrate) rents one pod,
+# voices with every word check and retry soren-voice does, brings the audio back and terminates it.
+RENTED_COMMAND = os.environ.get("CCVIDEO_RENTED_VOICE_COMMAND", "").strip() or "narrate"
+# Machines that must never voice locally: ~14 GB at the peak on a 16 GB Mac mini that also runs
+# the Director drove it into swap on 4 Nov 2026.
+NO_LOCAL_VOICING = {"devthrottle-mac-mini"}
 PARTIAL_EXIT = 3
 EL_SETTINGS = {
     "stability": 0.55,
@@ -121,8 +132,10 @@ class Voice:
 
     def describe(self):
         if self.provider == "local":
-            return "local %s / %s (no key, no cost%s)" % (
-                self.voice, LOCAL_COMMAND,
+            return "local %s / %s (no key%s)" % (
+                self.voice, "rented GPU via " + RENTED_COMMAND
+                if shutil.which(RENTED_COMMAND) and os.environ.get("CCVIDEO_VOICE_HERE") != "1"
+                else LOCAL_COMMAND + " on this machine",
                 ", voice budget %ds" % (self.deadline - time.time()) if self.deadline else "")
         if self.provider == "openai":
             return "OpenAI %s / %s (key %s)" % (self.voice, OPENAI_MODEL, OPENAI_KEY_NAME)
@@ -145,17 +158,113 @@ def partial(why):
     sys.exit(PARTIAL_EXIT)
 
 
-def synthesise_local(said, voice, out_path):
-    """Voice one segment with the local command. Its chunks are cached beside the segment cache,
-    so a segment cut short by the budget resumes mid-segment on the next run."""
-    if not shutil.which(LOCAL_COMMAND):
-        raise SystemExit("--tts local needs the %r command on PATH" % LOCAL_COMMAND)
+def local_voice_where():
+    """("rented", narrate) when this machine can reach the rented GPU, else ("here", soren-voice).
+    Set CCVIDEO_VOICE_HERE=1 to voice on this machine even when narrate is available."""
+    import platform
+    host = platform.node().split(".")[0]
+    rented = shutil.which(RENTED_COMMAND)
+    if rented and os.environ.get("CCVIDEO_VOICE_HERE", "").strip() != "1":
+        return "rented", rented
+    if host in NO_LOCAL_VOICING:
+        raise SystemExit(
+            "--tts local: %s is not allowed to voice on this machine (it needs ~14 GB of 16), and "
+            "the rented-GPU command %r is %s. Put narrate on PATH, or set "
+            "CCVIDEO_RENTED_VOICE_COMMAND to it." % (
+                host, RENTED_COMMAND,
+                "switched off by CCVIDEO_VOICE_HERE=1" if rented else "not on PATH"))
+    local = shutil.which(LOCAL_COMMAND)
+    if not local:
+        raise SystemExit("--tts local needs %r (the rented GPU) or %r on PATH"
+                         % (RENTED_COMMAND, LOCAL_COMMAND))
+    return "here", local
+
+
+def _work(out_path, said):
     out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     work = out_path.parent / "local-voice" / out_path.stem
     work.mkdir(parents=True, exist_ok=True)
     (work / "text.txt").write_text(said, encoding="utf-8")
-    cmd = [LOCAL_COMMAND, str(work / "text.txt"), str(work / "voice.wav"), "--parts", str(work / "parts")]
+    return work
+
+
+def _finish_local(work, out_path, said):
+    """The segment's mp3 from the voiced wav: soren-voice pads 0.4 s lead and 2 s tail for a whole
+    narration; a segment has its own gaps from the assembler, so keep only the speech."""
+    out_path = Path(out_path)
+    tmp = Path(tempfile.mkstemp(suffix=".mp3", dir=str(out_path.parent))[1])
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(work / "voice.wav"),
+         "-af", "atrim=start=0.4,areverse,atrim=start=2.0,areverse",
+         "-ar", "44100", "-ac", "1", "-b:a", "128k", str(tmp)])
+    if tmp.stat().st_size < MIN_AUDIO_BYTES:
+        tmp.unlink()
+        raise SystemExit("the local voice made no audio for %r" % said[:60])
+    tmp.replace(out_path)
+    return out_path
+
+
+def voice_rented(jobs, voice, cache_dir, command):
+    """Voice [(said, out_mp3)] on ONE rented GPU. The batch file and the pod record have ONE fixed
+    name per cache directory - never one named after what is missing, which shrinks after every
+    PARTIAL and would lose the pod still voicing it."""
+    cache_dir = Path(cache_dir)
+    spec, todo = [], []
+    for said, out_path in jobs:
+        work = _work(out_path, said)
+        spec.append({"text": str(work / "text.txt"), "out": str(work / "voice.wav")})
+        todo.append((work, out_path, said))
+    jf = cache_dir / "local-voice" / "rented-batch.json"
+    jf.parent.mkdir(parents=True, exist_ok=True)
+    jf.write_text(json.dumps(spec, indent=1), encoding="utf-8")
+    cmd = [command, "--batch", str(jf)]
+    if voice.deadline:
+        left = voice.deadline - time.time()
+        if left <= 0:
+            partial("voice budget spent")
+        cmd += ["--budget", "%d" % max(1, left)]
+    print("voice   : %d segment(s) to voice on one rented GPU" % len(jobs), flush=True)
+    r = subprocess.run(cmd)
+    if r.returncode == PARTIAL_EXIT:
+        partial("the rented GPU is still voicing")
+    if r.returncode != 0:
+        raise SystemExit("%s failed (exit %d) voicing %d segment(s)"
+                         % (Path(command).name, r.returncode, len(jobs)))
+    for work, out_path, said in todo:
+        if not (work / "voice.wav").exists():
+            raise SystemExit("%s finished but brought back no audio for %r"
+                             % (Path(command).name, said[:60]))
+        _finish_local(work, out_path, said)
+
+
+def prefetch_local(segments, voice, cache_dir):
+    """Voice every segment the cache lacks in ONE rented batch, before the assembler asks for them
+    one at a time. Does nothing unless the voice is local and the rented GPU is the way."""
+    if voice.provider != "local":
+        return 0
+    jobs = [(spoken(voice.brand, s.text), cache_path(cache_dir, s.id, s.text, voice))
+            for s in segments]
+    jobs = [(said, p) for said, p in jobs if not cached(p)]
+    if not jobs:
+        return 0
+    where, command = local_voice_where()
+    if where != "rented":
+        return 0              # soren-voice here, segment by segment, as before
+    voice_rented(jobs, voice, cache_dir, command)
+    return len(jobs)
+
+
+def synthesise_local(said, voice, out_path):
+    """Voice one segment with the owner's voice: on the rented GPU when this machine has it, else
+    with the local command, whose chunks are cached beside the segment cache so a segment cut short
+    by the budget resumes mid-segment on the next run."""
+    where, command = local_voice_where()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if where == "rented":
+        voice_rented([(said, out_path)], voice, out_path.parent, command)
+        return out_path
+    work = _work(out_path, said)
+    cmd = [command, str(work / "text.txt"), str(work / "voice.wav"), "--parts", str(work / "parts")]
     if voice.deadline:
         left = voice.deadline - time.time()
         if left <= 0:
@@ -166,17 +275,7 @@ def synthesise_local(said, voice, out_path):
         partial("voice budget spent inside segment %s" % out_path.stem)
     if r.returncode != 0:
         raise SystemExit("%s failed (exit %d) on %r" % (LOCAL_COMMAND, r.returncode, said[:60]))
-    # soren-voice pads 0.4 s lead and 2 s tail for a whole narration; a segment has its own gaps
-    # from the assembler, so keep only the speech: trim the padding it added.
-    tmp = Path(tempfile.mkstemp(suffix=".mp3", dir=str(out_path.parent))[1])
-    run(["ffmpeg", "-v", "error", "-y", "-i", str(work / "voice.wav"),
-         "-af", "atrim=start=0.4,areverse,atrim=start=2.0,areverse",
-         "-ar", "44100", "-ac", "1", "-b:a", "128k", str(tmp)])
-    if tmp.stat().st_size < MIN_AUDIO_BYTES:
-        tmp.unlink()
-        raise SystemExit("the local voice made no audio for %r" % said[:60])
-    tmp.replace(out_path)
-    return out_path
+    return _finish_local(work, out_path, said)
 
 
 def synthesise(text, voice, out_path, api_key):

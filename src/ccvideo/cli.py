@@ -61,8 +61,9 @@ def _add_tutorial(sub):
                    help="desktop 1920x1080 or phone 1080x1920")
     p.add_argument("--tts", default="openai", choices=["openai", "elevenlabs", "local"])
     p.add_argument("--voice-budget", type=float, default=0,
-                   help="--tts local: stop starting new voice work after this many seconds and "
-                        "exit 3 (PARTIAL); run the same command again to carry on from the cache")
+                   help="--tts local: after this many seconds stop and exit 3 (PARTIAL) - on the "
+                        "rented GPU the pod keeps voicing and the same command run again picks "
+                        "it up; on this machine it carries on from the chunk cache")
     p.add_argument("--voice", default="", help="override the voice for the active provider")
     p.add_argument("--el-model", default="", choices=("",) + EL_MODELS,
                    help="ElevenLabs model (default %s, so warm caches stay valid)" % EL_MODEL_ID)
@@ -129,6 +130,10 @@ def _tutorial(args):
     print("voice   : %s" % voice.describe())
     print("brand   : %s, %s %dx%d" % (args.brand, args.size, target["width"], target["height"]))
     print("script  : %d segments, %d needing voice" % (len(doc.segments), todo))
+    if todo and not args.no_tts:
+        # The owner's voice on a rented GPU: every missing segment on ONE pod, not one pod each.
+        from .narrate import prefetch_local
+        prefetch_local(doc.segments, voice, build.audio)
 
     def report(segment, secs, label, synthesised):
         print("  %s  %5.1fs  %s%s" % (segment.id, secs, label,
