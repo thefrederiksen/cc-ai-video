@@ -114,7 +114,7 @@ script, so a segment left out is never heard under its neighbour. Pass one of `-
 
 ```
 ccvideo tutorial --script s.txt --shots capture/ --narration voice/take.wav --captions \
-                 --loudness -14 --out out.mp4 --size desktop
+                 --out out.mp4 --size desktop
 ```
 
 **Captions (`--captions`).** Burns the segment TEXT - our spelling, not the transcriber's - in a
@@ -128,12 +128,12 @@ With `--audio`, a segment whose file does not say most of its TEXT stops the bui
 segment renders, captions or not: it is the wrong file.
 
 ```
-ccvideo tutorial --script s.txt --shots capture/ --audio voice/ --captions --loudness -14 \
+ccvideo tutorial --script s.txt --shots capture/ --audio voice/ --captions \
                  --out out.mp4 --size desktop
 ```
 
-Use `--loudness -14` for LinkedIn and YouTube; a voice file made elsewhere arrives at whatever
-level its tool left it, and the QA gate wants -20 to -11 LUFS.
+Do not pass `--loudness`: a voice file made elsewhere arrives at whatever level its tool left it,
+and the tutorial already levels the finished file to the one published level by default.
 
 Record the app at 125 percent browser zoom so its text still reads on a phone.
 
