@@ -40,19 +40,22 @@ def srt_time(t):
 
 
 def write_ass(cues, path, width, height, font="Segoe UI Black", size=80,
-              baseline=None, glow=True):
+              baseline=None, glow=True, wrap=2):
     """Burned-in captions.
 
     Two layers when `glow`: a heavily blurred copy of the same text underneath, then the text
     itself. That is what keeps a white caption readable over a bright frame without a box
     behind it, which would cover the picture.
+
+    `wrap` is the ASS WrapStyle: 2 never wraps (the cue builder already sized the line), 0
+    wraps a line too wide for the frame instead of letting it run off the edge.
     """
     path = Path(path)
     baseline = baseline if baseline is not None else int(height * 0.555)
     margin_v = height - baseline
     head = (
         "[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
-        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        "WrapStyle: %d\nScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, "
         "Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, "
@@ -63,7 +66,7 @@ def write_ass(cues, path, width, height, font="Segoe UI Black", size=80,
         "1,2,0,2,40,40,%d,1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, "
         "Text\n"
-        % (width, height, font, size, margin_v, font, size, margin_v))
+        % (width, height, wrap, font, size, margin_v, font, size, margin_v))
 
     import re
     lines = [head]

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .. import targets
+from .. import subtitles, targets
 from ..draw import render_card
 from ..level import publish_chain
 from ..narrate import speak
@@ -36,6 +36,22 @@ from ..shell import duration, run, stream_frames
 ZOOM = 1.05         # maximum zoom; the image is pre-fitted so nothing is ever cropped
 LEAD_IN = 0.4       # seconds of held picture before the voice starts
 TAIL = 0.7          # seconds of held picture after the voice stops
+
+# With captions on, the bottom of the frame is a strip of its own and the picture is fitted
+# ABOVE it, so a caption never covers the interface being shown. A fraction of the height,
+# so it scales with the frame; rounded to an even number of pixels for the encoder.
+CAPTION_STRIP = 0.11
+CAPTION_SIZE = 52 / 1080.0      # caption type size as a fraction of the frame height
+
+
+def picture_box(target, captions):
+    """(width, height) the picture is fitted into: the whole frame, or the frame less the
+    caption strip."""
+    w, h = target["width"], target["height"]
+    if not captions:
+        return w, h
+    strip = int(round(h * CAPTION_STRIP / 2.0)) * 2
+    return w, h - strip
 
 
 class Build:
@@ -60,7 +76,7 @@ class Build:
 
 def picture_for(segment, script, brand, target, build, stem, shots_dir):
     """The still this segment shows, and a human label for the log."""
-    if segment.kind == "image":
+    if segment.kind in ("image", "clip"):
         return os.path.join(shots_dir, segment.image), segment.image
     path = build.cards / ("card-%s-%s.png" % (stem, segment.id))
     if segment.kind == "card":
@@ -116,26 +132,85 @@ def zoom_frame(canvas, z):
     return canvas.resize((w, h), Image.BICUBIC, box=box)
 
 
-def render_segment(picture, audio, index, out, brand, target):
-    """One segment: a still, its narration, a beat at each end and a slow zoom."""
+def _audio_filter(encode):
+    layout = "mono" if encode["channels"] == "1" else "stereo"
+    return ("adelay=delays=%d:all=1,apad=pad_dur=%.2f,"
+            "aformat=channel_layouts=%s:sample_rates=%s"
+            % (int(LEAD_IN * 1000), TAIL, layout, encode["sample_rate"]))
+
+
+def _audio_input(audio, window):
+    """The narration as an ffmpeg input: the whole file, or just its speech window."""
+    if window is None:
+        return ["-i", str(audio)]
+    return ["-ss", "%.3f" % window[0], "-t", "%.3f" % window[1], "-i", str(audio)]
+
+
+def segment_seconds(audio, window=None):
+    """How long a segment runs: its narration plus a beat at each end."""
+    return (window[1] if window else duration(audio)) + LEAD_IN + TAIL
+
+
+def render_segment(picture, audio, index, out, brand, target, window=None, box=None):
+    """One segment: a still, its narration, a beat at each end and a slow zoom.
+
+    `window` is (start, seconds) of the narration file to use, for a pre-made file; `box` is
+    the (width, height) at the top of the frame the picture lives in, when captions take the
+    strip below it. Without either this is exactly the renderer it always was."""
     encode = target["encode"]
     w, h, fps = target["width"], target["height"], encode["fps"]
 
-    seconds = duration(audio) + LEAD_IN + TAIL
+    seconds = segment_seconds(audio, window)
     frames = max(2, int(round(seconds * fps)))
-    canvas = letterbox(picture, w, h, brand["bg"])
+    if box is None or tuple(box) == (w, h):
+        canvas = letterbox(picture, w, h, brand["bg"])
+        frame = lambda n: zoom_frame(canvas, zoom_at(n, frames, index))  # noqa: E731
+    else:
+        canvas = letterbox(picture, box[0], box[1], brand["bg"])
+        ground = Image.new("RGB", (w, h), tuple(brand["bg"][:3]))
 
-    layout = "mono" if encode["channels"] == "1" else "stereo"
-    audio_filter = ("adelay=delays=%d:all=1,apad=pad_dur=%.2f,"
-                    "aformat=channel_layouts=%s:sample_rates=%s"
-                    % (int(LEAD_IN * 1000), TAIL, layout, encode["sample_rate"]))
+        def frame(n):
+            full = ground.copy()
+            full.paste(zoom_frame(canvas, zoom_at(n, frames, index)), ((w - box[0]) // 2, 0))
+            return full
+
     cmd = (["ffmpeg", "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (w, h),
-            "-r", str(fps), "-i", "-", "-i", str(audio), "-af", audio_filter]
+            "-r", str(fps), "-i", "-"] + _audio_input(audio, window)
+           + ["-af", _audio_filter(encode)]
            + targets.video_args(encode)
            + targets.audio_args(encode)
            + ["-t", "%.3f" % seconds, "-movflags", "+faststart", str(out)])
-    stream_frames(cmd, (zoom_frame(canvas, zoom_at(n, frames, index)) for n in range(frames)))
+    stream_frames(cmd, (frame(n) for n in range(frames)))
+    return seconds
+
+
+def render_clip_segment(clip, clip_fit, audio, out, brand, target, window=None, box=None):
+    """One segment over a recorded clip: the part of the clip `clip_fit` chose, at its speed,
+    its last frame held to the end, fitted (never cropped) into `box`, under the narration.
+    The clip's own sound, if it has any, is not used."""
+    encode = target["encode"]
+    w, h, fps = target["width"], target["height"], encode["fps"]
+    bw, bh = box or (w, h)
+    seconds = segment_seconds(audio, window)
+    colour = "0x%02x%02x%02x" % tuple(brand["bg"][:3])
+    # The hold is padded past the segment's end and the output is cut at -t, so frame rounding
+    # can never leave the last frames of a segment black.
+    video = ("[0:v]setpts=(PTS-STARTPTS)/%.6f,fps=%d,"
+             "scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2"
+             ":flags=lanczos,setsar=1,"
+             "pad=%d:%d:(%d-iw)/2:(%d-ih)/2:color=%s,"
+             "tpad=stop_mode=clone:stop_duration=%.3f[v]"
+             % (clip_fit.speed, fps, bw, bh, w, h, w, bh, colour, clip_fit.hold + 1.0))
+    cmd = (["ffmpeg", "-y", "-loglevel", "error",
+            "-ss", "%.3f" % clip_fit.start, "-t", "%.3f" % clip_fit.used, "-i", str(clip)]
+           + _audio_input(audio, window)
+           + ["-filter_complex", video + ";[1:a]" + _audio_filter(encode) + "[a]",
+              "-map", "[v]", "-map", "[a]"]
+           + targets.video_args(encode)
+           + targets.audio_args(encode)
+           + ["-t", "%.3f" % seconds, "-movflags", "+faststart", str(out)])
+    run(cmd)
     return seconds
 
 
@@ -156,24 +231,87 @@ def write_chapters(segments, timings, path):
 
 
 def assemble(script, shots_dir, out_path, brand, target, voice, build,
-             allow_synthesis=True, on_segment=None):
+             allow_synthesis=True, on_segment=None, audio_dir=None, captions=False,
+             max_speed=None, words_model="base.en", narration=None, read_segments=None):
     """Build the whole video. Returns (timings, total seconds).
 
     `on_segment` is called with (segment, seconds, label, was_synthesised) as each one lands,
     so a caller can report progress without this function knowing how it wants to.
+
+    `audio_dir` takes the narration from pre-made files, one per segment, instead of `voice`;
+    `narration` takes it from ONE continuous recording, split at the pauses between segments
+    by matching each segment's TEXT to the heard words (see generate/timing.py).
+    `read_segments` is every segment that was READ into that recording, when only some of them
+    are built (--only): the split is made against all of them, so the speech of a segment left
+    out never lands in a neighbour's slice. `captions` burns the segment TEXT into a strip under the picture,
+    timed by the narration's heard words, and writes the same cues as an .srt beside the mp4.
+    `max_speed` caps how fast a clip may be played to fit its narration (generate/fit.py).
     """
+    from . import fit as fitlib
+    from . import timing
+
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     build.make()
     stem = out_path.stem
+    box = picture_box(target, captions)
+    words_dir = build.root / "words"
+    max_speed = fitlib.DEFAULT_MAX_SPEED if max_speed is None else max_speed
 
-    timings, elapsed = [], 0.0
+    # Every pre-made file is found before anything renders: a missing one is a stop, not a
+    # half-built video.
+    premade = ({s.id: timing.find_audio(s, audio_dir) for s in script.segments}
+               if audio_dir else {})
+    # One continuous recording: transcribed once, split at the pauses between segments, and
+    # every slice found before anything renders.
+    slices = {}
+    if narration:
+        whole = timing.heard_words(narration, words_dir, model=words_model)
+        read = read_segments or script.segments
+        for segment, piece in zip(read, timing.split_narration(
+                read, whole, timing.audio_length(narration))):
+            slices[segment.id] = piece
+
+    timings, elapsed, cue_words = [], 0.0, []
     for index, segment in enumerate(script.segments):
         picture, label = picture_for(segment, script, brand, target, build, stem, shots_dir)
-        audio, synthesised = speak(segment.text, voice, build.audio, segment.id,
-                                   allow_synthesis=allow_synthesis)
+        window, heard = None, None
+        if narration:
+            start, seconds, heard = slices[segment.id]
+            audio, synthesised, window = Path(narration), False, (start, seconds)
+        elif audio_dir:
+            audio, synthesised = premade[segment.id], False
+            heard = timing.heard_words(audio, words_dir, model=words_model)
+            window = timing.speech_window(heard, timing.audio_length(audio))
+        else:
+            audio, synthesised = speak(segment.text, voice, build.audio, segment.id,
+                                       allow_synthesis=allow_synthesis)
+            if captions:
+                heard = timing.heard_words(audio, words_dir, model=words_model)
+        # A pre-made file is checked against its TEXT before it renders, captions or not: the
+        # wrong file under a segment must stop the build, not play.
+        aligned = (timing.align(segment.text, heard, segment.id)
+                   if captions or audio_dir else None)
         piece = build.segments / ("seg-%s-%s.mp4" % (stem, segment.id))
-        seconds = render_segment(picture, audio, index, piece, brand, target)
+        if segment.kind == "clip":
+            seconds = segment_seconds(audio, window)
+            clip_fit = fitlib.fit(duration(picture), seconds, segment.clip_start,
+                                  segment.clip_end, max_speed)
+            render_clip_segment(picture, clip_fit, audio, piece, brand, target, window, box)
+            label = "CLIP %s %s" % (segment.image, clip_fit.describe())
+            if clip_fit.trimmed > 0.005:
+                print("  TRIMMED segment %s: %s needs more than x%.2f to fit %.1fs of "
+                      "narration, so its last %.1fs are not shown. Set CLIP-END, or narrate "
+                      "longer." % (segment.id, segment.image, max_speed, seconds,
+                                   clip_fit.trimmed), flush=True)
+        else:
+            seconds = render_segment(picture, audio, index, piece, brand, target, window,
+                                     box if captions else None)
+        if captions:
+            shift = elapsed + LEAD_IN - (window[0] if window else 0.0)
+            cue_words.append(([{"start": word["start"] + shift, "end": word["end"] + shift,
+                                "word": word["word"]} for word in aligned],
+                              elapsed + seconds))
         timings.append((segment.id, elapsed, seconds, label))
         elapsed += seconds
         if on_segment:
@@ -190,11 +328,58 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
     joined = build.segments / ("joined-%s.mp4" % stem)
     run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
          "-i", str(listing), "-c", "copy", str(joined)])
-    run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(joined), "-i", str(chapters),
-         "-map_metadata", "1", "-c", "copy", "-metadata", "title=%s" % script.title,
-         "-movflags", "+faststart", str(out_path)])
+    if not captions:
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(joined), "-i", str(chapters),
+             "-map_metadata", "1", "-c", "copy", "-metadata", "title=%s" % script.title,
+             "-movflags", "+faststart", str(out_path)])
+        return timings, duration(out_path)
 
+    ass = write_captions(cue_words, elapsed, target, build.segments / ("captions-%s.ass" % stem),
+                         out_path.with_suffix(".srt"))
+    # The picture is re-encoded once, to burn the captions; the narration is copied untouched.
+    run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(joined), "-i", str(chapters),
+         "-map", "0:v", "-map", "0:a", "-map_metadata", "1",
+         "-vf", "subtitles='%s'" % subtitles.ass_path_for_filter(ass)]
+        + targets.video_args(target["encode"])
+        + ["-c:a", "copy", "-metadata", "title=%s" % script.title,
+           "-movflags", "+faststart", str(out_path)])
     return timings, duration(out_path)
+
+
+def write_captions(segment_words, total, target, ass_path, srt_path):
+    """The strip captions for a whole video: burned-in .ass and a sidecar .srt, the same cues.
+
+    `segment_words` is one (timed words, segment end) per segment. Cues are built, held and
+    clamped segment by segment, so a caption never runs across a seam: merged across one, the
+    end of one picture's sentence and the start of the next sat on screen together over the
+    cut, and a short last cue held for reading ran over the next segment's first frames.
+
+    Strip style - up to seven words, broken at punctuation and pauses - sits in the band under
+    the picture. The sidecar carries exactly those cues, so what a viewer reads with the sound
+    off and what a player shows from the .srt never disagree."""
+    from .. import cues as cuelib
+    w, h = target["width"], target["height"]
+    cues = []
+    for words, segment_end in segment_words:
+        built = cuelib.build(words, "strip")
+        for cue in built:
+            cue["end"] = min(cue["end"], segment_end - 0.02)
+        kept, dropped = cuelib.hold_into_gaps(built, until=min(total, segment_end))
+        for cue in dropped:
+            print("  dropped an unreadable caption fragment at %.2fs: %r"
+                  % (cue["start"], cue["plain"]), flush=True)
+        cues.extend(kept)
+    strip = h - picture_box(target, True)[1]
+    # Sized by the frame's SHORT side, so a phone frame's line fits its width as a desktop one
+    # does; a line still too long for the width wraps instead of running off the edge.
+    size = int(round(CAPTION_SIZE * min(w, h)))
+    # Centre one line of type in the strip: the baseline sits a little under halfway down it.
+    baseline = h - int((strip - size) / 2.0)
+    subtitles.write_ass(cues, ass_path, w, h, size=size, baseline=baseline, glow=False,
+                        wrap=0)
+    subtitles.write_srt(cues, srt_path)
+    print("  %d captions, sidecar %s" % (len(cues), Path(srt_path).name), flush=True)
+    return ass_path
 
 
 def normalise_loudness(path, lufs, encode):
