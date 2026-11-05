@@ -292,7 +292,7 @@ def assemble(script, shots_dir, out_path, brand, target, voice, build,
         # wrong file under a segment must stop the build, not play.
         aligned = (timing.align(segment.text, heard, segment.id)
                    if captions or audio_dir else None)
-        piece =build.segments / ("seg-%s-%s.mp4" % (stem, segment.id))
+        piece = build.segments / ("seg-%s-%s.mp4" % (stem, segment.id))
         if segment.kind == "clip":
             seconds = segment_seconds(audio, window)
             clip_fit = fitlib.fit(duration(picture), seconds, segment.clip_start,
