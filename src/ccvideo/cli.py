@@ -60,7 +60,9 @@ def _add_tutorial(sub):
     p.add_argument("--size", default="desktop", choices=sorted(targets.SIZES),
                    help="desktop 1920x1080 or phone 1080x1920")
     p.add_argument("--tts", default="", choices=["", "openai", "elevenlabs", "local"],
-                   help="who voices the narration (default openai); not with --audio")
+                   help="who voices the narration. Default: local, the owner's own trained "
+                        "voice; a paid provider also needs CCVIDEO_ALLOW_PAID_VOICE=1 in the "
+                        "same command. Not with --audio")
     p.add_argument("--audio", default="",
                    help="a folder of PRE-MADE narration, one file per segment (001.wav, or the "
                         "segment's AUDIO: line). Each is timed by its own transcript and only "
@@ -165,7 +167,7 @@ def _tutorial(args):
             raise SystemExit("--narration is not a file: %s" % narration)
         print("voice   : one recording %s, split at the pauses between segments" % narration)
     else:
-        voice = Voice(brand, args.tts or "openai", args.voice or None, args.el_model or None,
+        voice = Voice(brand, args.tts or "local", args.voice or None, args.el_model or None,
                       budget=args.voice_budget or None)
         todo = sum(1 for s in doc.segments
                    if not cached(cache_path(build.audio, s.id, s.text, voice)))
