@@ -59,7 +59,9 @@ def _add_tutorial(sub):
     p.add_argument("--brands", default="", help="JSON file of extra or replacement brands")
     p.add_argument("--size", default="desktop", choices=sorted(targets.SIZES),
                    help="desktop 1920x1080 or phone 1080x1920")
-    p.add_argument("--tts", default="openai", choices=["openai", "elevenlabs", "local"])
+    p.add_argument("--tts", default="local", choices=["openai", "elevenlabs", "local"],
+                   help="the voice. Default: local, the owner's own trained voice. A paid "
+                        "provider also needs CCVIDEO_ALLOW_PAID_VOICE=1 in the same command")
     p.add_argument("--voice-budget", type=float, default=0,
                    help="--tts local: after this many seconds stop and exit 3 (PARTIAL) - on the "
                         "rented GPU the pod keeps voicing and the same command run again picks "

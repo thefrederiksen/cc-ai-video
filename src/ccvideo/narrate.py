@@ -13,6 +13,10 @@ the model name, the voice name, the brand's narration instructions, the pronunci
 re-synthesises every segment and is billed. Change them only when the voice really changed.
 
 Providers
+    THE DEFAULT IS `local` - the owner's own trained voice - and the two paid providers below are
+    refused unless CCVIDEO_ALLOW_PAID_VOICE=1 is set in the same command. Forgetting a flag used to
+    be enough to narrate a published video in a stock voice; it is not any more.
+
     openai       gpt-4o-mini-tts, steered per brand. Key: OPENAI_API_KEY, or whatever
                  CCVIDEO_OPENAI_KEY_NAME names instead.
     elevenlabs   the long-form narrator, and the only provider that returns exact character
@@ -69,6 +73,12 @@ RENTED_COMMAND = os.environ.get("CCVIDEO_RENTED_VOICE_COMMAND", "").strip() or "
 # Machines that must never voice locally: ~14 GB at the peak on a 16 GB Mac mini that also runs
 # the Director drove it into swap on 4 Nov 2026.
 NO_LOCAL_VOICING = {"devthrottle-mac-mini"}
+# A paid provider is reachable only when this is set in the same command. The default voice is
+# the owner's own, and forgetting a flag must never be able to put a stock voice in a video
+# (owner, 5 Nov 2026: he is the voice of everything DevThrottle publishes; code-level switch,
+# no quality gate, his choice of enforcement). It is NOT part of the voice cache key: where
+# permission came from says nothing about how the narration sounds.
+PAID_VOICE_ENV = "CCVIDEO_ALLOW_PAID_VOICE"
 PARTIAL_EXIT = 3
 EL_SETTINGS = {
     "stability": 0.55,
@@ -88,9 +98,18 @@ class Voice:
     caller that changed one and expected the others to keep their cached audio.
     """
 
-    def __init__(self, brand, provider="openai", voice=None, el_model=None, budget=None):
+    def __init__(self, brand, provider="local", voice=None, el_model=None, budget=None):
         if provider not in ("openai", "elevenlabs", "local"):
             raise SystemExit("unknown voice provider %r - have openai, elevenlabs, local" % provider)
+        if provider != "local" and not os.environ.get(PAID_VOICE_ENV, "").strip():
+            raise SystemExit(
+                "refusing to voice with %r: the voice is the owner's own (the 'local' provider).\n"
+                "  A paid provider is still here for work that genuinely needs one, but it must be\n"
+                "  asked for on purpose - set %s=1 in the SAME command, so it is visible to anyone\n"
+                "  reading that command and cannot happen by forgetting a flag:\n"
+                "    %s=1 ccvideo ... --tts %s\n"
+                "  Nothing DevThrottle publishes uses one (owner, 5 Nov 2026)."
+                % (provider, PAID_VOICE_ENV, PAID_VOICE_ENV, provider))
         if budget and provider != "local":
             raise SystemExit("--voice-budget only applies to --tts local")
         self.brand = brand
