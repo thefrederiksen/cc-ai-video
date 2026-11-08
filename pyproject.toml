@@ -1,6 +1,6 @@
 [project]
 name = "cc-ai-video"
-version = "0.2.0"
+version = "0.2.1"
 description = "Make AI videos, and cut real footage together. One library, one CLI, one Claude Code skill."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -14,6 +14,10 @@ dependencies = [
     # Word timings. The whole library cuts on real word boundaries, so this is not optional:
     # there is no estimate-based path to fall back to.
     "faster-whisper>=1.0,<2",
+    # faster-whisper 1.2.1 opens audio with av.open(..., metadata_errors=...), which av 19.0.2
+    # (Nov 2026) no longer accepts: every transcription failed with a TypeError after a fresh
+    # install. av 18.1.0 works. Lift this when faster-whisper supports av 19.
+    "av<19",
     # Frame arithmetic in the illustrated renderer and the picture score.
     "numpy>=1.24",
     # `ccvideo capture` drives a headless browser. Its browser is a separate download after
