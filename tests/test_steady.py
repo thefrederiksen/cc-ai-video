@@ -194,4 +194,6 @@ def test_a_stretch_between_cuts_shorter_than_the_fit_window_is_skipped_not_a_cra
     cam = (0.3, 0.1, 0.0005)
     for n in (29, 30, 31, 32):
         steps = [steady.CUT] + [cam] * n + [steady.CUT]
-        steady.score_track(steps, (W, H), 30.0)
+        glides = steady.score_track(steps, (W, H), 30.0)
+        # Skipped only when shorter than the window: 31 frames and up are still measured.
+        assert (len(glides) == 1) == (n >= 31), (n, glides)
