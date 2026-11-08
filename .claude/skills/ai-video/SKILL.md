@@ -142,6 +142,27 @@ Record the app at 125 percent browser zoom so its text still reads on a phone.
 The title-card cap is advice, not a law. If a deck-style video genuinely wants twelve cards,
 raise `--card-advice` and say why. Do not work around it by generating cards outside the tool.
 
+### Zoom and pan: `ccvideo move` - never zoompan
+
+Every zoom or pan on a recording or a still is made with `ccvideo move`. **Never write ffmpeg's
+`zoompan`** (nor a crop whose offset is an expression of time): it snaps the picture to whole
+pixels, so a slow move stands still for a few frames and then jumps, and the whole video shakes.
+Three course chapters shipped like that with every other check green.
+
+```
+ccvideo move take.mp4 --out shot.mp4 --seconds 7.5 --from 35.3 --to 47.3 --speed 2              --zoom 1:1.45 --centre 960,420:1040,610 --profile master
+ccvideo move page.png --out card.mp4 --seconds 4 --zoom 1.8:2 --centre 500,480:450,500
+```
+
+* `--zoom START:END` (1 = the whole frame) and `--centre X,Y:X,Y` in frame pixels: the same
+  numbers a zoompan move took, so an old shot list converts one line at a time. One value holds.
+* A part of a video plays at `--speed` and its last frame is held to fill `--seconds`.
+* `--ease smooth` is the default: the move starts and stops gently. `--move-seconds` ends the
+  move early and holds.
+* `--before "<filter>"` runs in SOURCE pixels before the camera - a mask or a blur stays on the
+  thing it hides however the camera moves.
+* `--profile master` for a shot that is encoded again later (a CLIP under `ccvideo tutorial`).
+
 ## EDIT: import, read, cut, crop, render
 
 ```
@@ -281,6 +302,12 @@ ccvideo sheet <files...> --out sheet.png
   frame-checked.
 * Never skip the hear-back on anything headed for an audience. `--no-speech` is for a fast
   local loop only.
+* **STEADY** follows the picture frame to frame and FAILS a camera move that stops and jumps,
+  naming the seconds. It reads `N/A` when the camera never moves - that is not a pass, nothing
+  was measured. A FAIL means a move was not made with `ccvideo move`: remake that shot, do not
+  argue with the number. A WARN names glides shaped like a RECORDED scroll (one axis, no zoom,
+  slowing down) - a browser paints its scroll at whole pixels and the recording cannot be remade;
+  watch those seconds and say what you saw. `--no-steady` is for a fast local loop only.
 
 **TAIL is separate from the percentage, and it has to be.** The hear-back scores the whole
 file, so one lost word out of ninety passes any threshold comfortably. A short shipped ending
@@ -304,6 +331,8 @@ hidden a real defect in this work.
 
 * **ASCII only** in scripts, cards, titles, descriptions and anything you write.
 * **No fallbacks.** If the tool stops, fix the cause. Do not work around it.
+* **Zooms and pans come from `ccvideo move`.** Never hand-write zoompan. Check `ccvideo --version`
+  says 0.2.0 or later; an older install has no `move` and no STEADY.
 * **Never upload.** This tool makes files. Publishing is a separate tool and a separate
   decision, and the human makes the final irreversible click.
 * If a render is for an audience, pass `--publish` and let it refuse what it should refuse.

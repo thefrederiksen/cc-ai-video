@@ -25,6 +25,16 @@ pip install cc-ai-video
 Needs `ffmpeg` and `ffprobe` on PATH. Windows fonts are used for cards; on other platforms
 point the library at your own.
 
+## Zoom and pan, on footage or a still
+
+```
+ccvideo move take.mp4 --out shot.mp4 --seconds 6 --from 35.3 --to 47.3 --zoom 1:1.45 --centre 960,420:1040,610
+```
+
+Drawn at sub-pixel precision and eased at both ends. ffmpeg's `zoompan` snaps the picture to
+whole pixels, so a slow move stops and jumps and the video shakes; `ccvideo qa` fails that
+(STEADY). `ccvideo --version` prints the installed version.
+
 ## Generate a narrated video
 
 ```
@@ -147,6 +157,13 @@ word survived, because measured against 66 finished shorts it cannot - a transcr
 place of another, in endings where the word was plainly audible. Pass `--fade` to match the
 renderer that made the file. A WARN means listen to the last second; only a silent ending
 fails.
+
+**STEADY watches the camera.** It follows a grid of patches from frame to frame, to a fraction
+of a pixel, fits them to one camera (a shift and a zoom), and scores every glide by how much it
+stumbles against its own smooth trend. Whole-pixel moves (ffmpeg's `zoompan`) fail it; moves made
+with `ccvideo move` pass. Typing and other things changing on screen are not the camera, and a
+cut is not a jump. A file whose camera never moves reads `N/A`: nothing was measured, so it is
+not a pass.
 
 `ccvideo sheet` builds a labelled contact sheet, because a card is rendered pixels and silent
 and no automated check in this package reads what one says. Every tile carries its file and
