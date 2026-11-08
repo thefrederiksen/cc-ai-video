@@ -186,3 +186,12 @@ def test_a_recorded_scroll_warns_and_a_steady_pan_still_fails(tmp_path):
     pan = steady.measure(_render(tmp_path, "pan-snapped", PAN, snapped=True))
     assert pan["verdict"] == "FAIL", pan["detail"]
     assert not any(g["scroll"] for g in pan["glides"])
+
+
+def test_a_stretch_between_cuts_shorter_than_the_fit_window_is_skipped_not_a_crash():
+    """Found on the before/after demo: a 30-frame stretch between two cuts is one frame shorter
+    than the 31-frame window the local trend is fitted over, and STEADY crashed on the shapes."""
+    cam = (0.3, 0.1, 0.0005)
+    for n in (29, 30, 31, 32):
+        steps = [steady.CUT] + [cam] * n + [steady.CUT]
+        steady.score_track(steps, (W, H), 30.0)

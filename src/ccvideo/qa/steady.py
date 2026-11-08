@@ -238,7 +238,9 @@ def score_track(steps, size, fps=30.0):
         k0, k1 = a, b
         a = b + 1
         good = known[k0:k1] & ~cut[k0:k1]
-        if good.sum() < MIN_GLIDE_FRAMES:
+        # The local trend is fitted over a window of 2 * (win // 2) + 1 frames; a stretch shorter
+        # than that cannot be scored (and is under a second anyway).
+        if good.sum() < MIN_GLIDE_FRAMES or k1 - k0 < 2 * (win // 2) + 1:
             continue
         v = np.where(good[:, None, None], vec[k0:k1], 0.0)
         cnt = np.convolve(good.astype(float), kern, "same")
