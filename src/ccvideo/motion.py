@@ -127,15 +127,27 @@ def is_image(path):
     return Path(path).suffix.lower() in IMAGE_SUFFIXES
 
 
-def decode_command(source, w, h, fps, seconds, start=None, end=None, speed=1.0, before=""):
+def fit_filter(w, h, pad="black"):
+    """Fit the source INSIDE w x h, keeping its shape, with bars of `pad` on the free sides.
+
+    Never a plain stretch: a 16:10 screenshot or a portrait recording squashed into 16:9 is a
+    distorted picture no check catches. A source already w x h passes through untouched."""
+    return ("scale=%d:%d:force_original_aspect_ratio=decrease,"
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=%s,setsar=1" % (w, h, w, h, pad))
+
+
+def decode_command(source, w, h, fps, seconds, start=None, end=None, speed=1.0, before="",
+                   pad="black"):
     """The ffmpeg command that turns `source` into exactly round(seconds * fps) raw RGB frames
     of w x h on stdout: the part [start, end] played at `speed`, its last frame held to fill
-    `seconds`. `before` is a filter in SOURCE pixels (a mask, a blur) applied first."""
+    `seconds`, fitted inside the frame. `before` is a filter in SOURCE pixels (a mask, a blur)
+    applied first."""
     frames = int(round(seconds * fps))
     pre = (before.rstrip(",") + ",") if before else ""
+    fit = fit_filter(w, h, pad)
     if is_image(source):
         inputs = ["-loop", "1", "-framerate", str(fps), "-i", str(source)]
-        chain = pre + "scale=%d:%d,setsar=1" % (w, h)
+        chain = pre + fit
     else:
         inputs = []
         if start is not None:
@@ -145,8 +157,8 @@ def decode_command(source, w, h, fps, seconds, start=None, end=None, speed=1.0, 
         inputs += ["-i", str(source)]
         # The hold is padded past the end and the frame count cuts it, so frame rounding can
         # never leave the shot short.
-        chain = (pre + "setpts=(PTS-STARTPTS)/%.6f,fps=%d,scale=%d:%d,setsar=1,"
-                 "tpad=stop_mode=clone:stop_duration=%.3f" % (speed, fps, w, h, seconds + 1.0))
+        chain = (pre + "setpts=(PTS-STARTPTS)/%.6f,fps=%d,%s,"
+                 "tpad=stop_mode=clone:stop_duration=%.3f" % (speed, fps, fit, seconds + 1.0))
     return (["ffmpeg", "-v", "error"] + inputs
             + ["-vf", chain, "-frames:v", str(frames), "-an",
                "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]), frames
@@ -176,28 +188,33 @@ def decoded_frames(cmd, w, h):
 
 def render_move(source, out, seconds, zoom=(1.0, 1.0), centre=None, start=None, end=None,
                 speed=1.0, move_seconds=None, kind="smooth", before="", size=(1920, 1080),
-                fps=30, profile="footage"):
+                fps=30, profile="footage", pad="black"):
     """Write one shot to `out`: `source` (a video or an image) under a camera move.
 
     zoom      (z0, z1); centre ((x0, y0), (x1, y1)) in frame pixels, default the middle.
     start/end the part of a video to use; speed plays it faster; its last frame is held.
     move_seconds  how long the move takes (default: the whole shot), then the camera holds.
+    pad       the colour of the bars when the source is not the frame's shape.
+    The shot is written under a temporary name and renamed only when every frame arrived, so a
+    failed move never leaves a file that a re-run would take for a finished shot.
     Returns the number of frames written."""
     w, h = size
     middle = (w / 2.0, h / 2.0)
     c0, c1 = centre if centre else (middle, middle)
-    cmd, frames = decode_command(source, w, h, fps, seconds, start, end, speed, before)
+    cmd, frames = decode_command(source, w, h, fps, seconds, start, end, speed, before, pad)
     if frames < 1:
         raise SystemExit("a %.3fs shot at %d fps has no frames" % (seconds, fps))
     move_frames = frames if move_seconds is None else max(1, int(round(move_seconds * fps)))
     move = Move(zoom[0], zoom[1], c0, c1, move_frames, kind)
     encode = dict(targets.PROFILES[profile], fps=fps)
-    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    part = out.with_name(out.stem + ".partial" + out.suffix)
     enc = (["ffmpeg", "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (w, h),
             "-r", str(fps), "-i", "-"]
            + targets.video_args(encode)
-           + ["-an", "-frames:v", str(frames), "-movflags", "+faststart", str(out)])
+           + ["-an", "-frames:v", str(frames), "-movflags", "+faststart", str(part)])
     count = [0]
 
     def drawn():
@@ -205,8 +222,13 @@ def render_move(source, out, seconds, zoom=(1.0, 1.0), centre=None, start=None, 
             count[0] = n + 1
             yield move.draw(frame, n)
 
-    stream_frames(enc, drawn())
-    if count[0] != frames:
-        raise SystemExit("the move expected %d frames from %s and got %d"
-                         % (frames, source, count[0]))
+    try:
+        stream_frames(enc, drawn())
+        if count[0] != frames:
+            raise SystemExit("the move expected %d frames from %s and got %d"
+                             % (frames, source, count[0]))
+        part.replace(out)
+    finally:
+        if part.exists():
+            part.unlink()
     return frames

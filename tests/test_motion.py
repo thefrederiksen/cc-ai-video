@@ -185,3 +185,29 @@ def test_render_move_on_a_still_with_a_mask_before_the_camera(tmp_path):
 def test_a_missing_source_stops_with_ffmpeg_words(tmp_path):
     with pytest.raises(SystemExit):
         motion.render_move(tmp_path / "nothing.mp4", tmp_path / "o.mp4", 1.0, size=(W, H))
+
+
+def test_a_source_of_another_shape_is_fitted_not_stretched(tmp_path):
+    """A square stays square: a 1000x1000 picture in a 16:9 frame gets bars, never a squash."""
+    src, out = tmp_path / "square.png", tmp_path / "shot.mp4"
+    img = Image.new("RGB", (1000, 1000), (0, 0, 0))
+    ImageDraw.Draw(img).rectangle((300, 300, 699, 699), fill=(255, 255, 255))
+    img.save(src)
+    motion.render_move(src, out, 0.2, size=(W, H), fps=30, profile="master")
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1",
+                          "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                         capture_output=True, check=True).stdout
+    a = np.frombuffer(raw, np.uint8).reshape(H, W) > 128
+    ys, xs = np.nonzero(a)
+    width, height = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+    assert abs(width - height) <= 2, "the square came out %dx%d" % (width, height)
+    assert abs(height - 144) <= 2, "fitted to the frame height: 400 * 360/1000"
+
+
+def test_a_failed_move_leaves_no_file_a_rerun_would_take_as_done(tmp_path):
+    src, out = tmp_path / "take.mp4", tmp_path / "shot.mp4"
+    _source_video(src, 1.0)
+    with pytest.raises(SystemExit):
+        motion.render_move(src, out, 1.0, start=10.0, size=(W, H))     # past the end: no frames
+    assert not out.exists()
+    assert not list(tmp_path.glob("*.partial*"))

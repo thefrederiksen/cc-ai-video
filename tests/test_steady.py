@@ -160,3 +160,29 @@ def test_qa_reports_steady(tmp_path):
     assert rows["STEADY"]["result"] == "FAIL"
     rows = {r["check"]: r for r in run_checks(with_audio, speech=False, steady=False)}
     assert rows["STEADY"]["result"] == "SKIP", "skipped is said, never passed"
+
+
+def test_a_recorded_scroll_warns_and_a_steady_pan_still_fails(tmp_path):
+    """A browser paints a scroll at whole pixels, so its slowing tail stumbles; it is the
+    recording and cannot be remade, so STEADY says WARN and names it. The control: the same
+    whole-pixel stumble on a pan at a steady speed is a camera move and still FAILS."""
+    rng = np.random.default_rng(3)
+    page = Image.fromarray((rng.random((H * 3, W)) * 255).astype(np.uint8)).filter(
+        ImageFilter.GaussianBlur(2)).convert("RGB")
+    offsets, pos, speed = [], 0.0, 5.0
+    for _ in range(30):
+        offsets.append(0)
+    for _ in range(100):
+        pos += speed
+        speed *= 0.96
+        offsets.append(int(pos))          # whole pixels, as a browser paints
+    offsets += [offsets[-1]] * 30
+    frames = (page.crop((0, o, W, o + H)) for o in offsets)
+    result = steady.measure(_encode(frames, tmp_path / "scroll.mp4"))
+    assert result["verdict"] == "WARN", result["detail"]
+    assert "recorded scroll" in result["detail"]
+    assert any(g["scroll"] for g in result["glides"]), "the scroll was recognised"
+
+    pan = steady.measure(_render(tmp_path, "pan-snapped", PAN, snapped=True))
+    assert pan["verdict"] == "FAIL", pan["detail"]
+    assert not any(g["scroll"] for g in pan["glides"])

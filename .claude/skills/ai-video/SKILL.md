@@ -305,7 +305,9 @@ ccvideo sheet <files...> --out sheet.png
 * **STEADY** follows the picture frame to frame and FAILS a camera move that stops and jumps,
   naming the seconds. It reads `N/A` when the camera never moves - that is not a pass, nothing
   was measured. A FAIL means a move was not made with `ccvideo move`: remake that shot, do not
-  argue with the number. `--no-steady` is for a fast local loop only.
+  argue with the number. A WARN names glides shaped like a RECORDED scroll (one axis, no zoom,
+  slowing down) - a browser paints its scroll at whole pixels and the recording cannot be remade;
+  watch those seconds and say what you saw. `--no-steady` is for a fast local loop only.
 
 **TAIL is separate from the percentage, and it has to be.** The hear-back scores the whole
 file, so one lost word out of ninety passes any threshold comfortably. A short shipped ending

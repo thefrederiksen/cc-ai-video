@@ -698,7 +698,11 @@ def _add_move(sub):
     p.add_argument("--before", default="",
                    help="an ffmpeg filter in SOURCE pixels applied before the camera "
                         "(a mask, a blur), e.g. drawbox=x=0:y=195:w=1920:h=86:color=black:t=fill")
-    p.add_argument("--size", default="1920x1080", help="the frame, WIDTHxHEIGHT")
+    p.add_argument("--size", default="1920x1080",
+                   help="the frame, WIDTHxHEIGHT. A source of another shape is fitted inside it "
+                        "with bars, never stretched")
+    p.add_argument("--pad", default="black",
+                   help="the colour of those bars, an ffmpeg colour (e.g. black, 0x0b1426)")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--profile", default="footage", choices=sorted(targets.PROFILES),
                    help="the encode profile; 'master' loses nothing for a shot that is "
@@ -722,7 +726,7 @@ def _move(args):
     try:
         frames = render_move(args.source, args.out, args.seconds, (z0, z1), centre,
                              args.start, args.end, args.speed, args.move_seconds, args.ease,
-                             args.before, (w, h), args.fps, args.profile)
+                             args.before, (w, h), args.fps, args.profile, args.pad)
     except ValueError as exc:
         raise SystemExit(str(exc))
     print("OK %s  %d frames, zoom %g -> %g, %s" % (args.out, frames, z0, z1, args.ease))

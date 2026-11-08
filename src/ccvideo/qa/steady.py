@@ -31,6 +31,11 @@ HOW IT MEASURES
 
    A smooth move scores well under the threshold; whole-pixel steps score far above it.
 
+A RECORDED SCROLL is the one thing that looks like a shaky camera and is not one: a browser paints
+a scroll at whole pixels, so its slowing tail stumbles. A glide that shifts along one axis, with no
+zoom, and only slows down is reported as a WARN naming it, never a FAIL - the recording cannot be
+remade. A zoom, or a pan at a steady speed or on two axes, is a camera move and still FAILS.
+
 THE GATE is a PRESENCE, like every check in qa. PASS needs at least one second of measured glide
 and every glide under the threshold. A file whose camera never moves reads N/A with the number of
 frames looked at - it is not a PASS, because nothing was measured. A file that cannot be read
@@ -262,10 +267,30 @@ def score_track(steps, size, fps=30.0):
                 per_s.setdefault(int((t + 1) // fps), []).append(float(u))
             worst = sorted(((sec, round(_rms(u), 2)) for sec, u in per_s.items()),
                            key=lambda q: -q[1])[:3]
+            cams = np.array([steps[i] for i in g + k0], np.float64)
             glides.append({"start": (g[0] + k0 + 1) / fps, "end": (g[-1] + k0 + 2) / fps,
                            "frames": int(len(g)), "score": _rms(unev),
-                           "speed": float(np.mean(speed[g])), "worst": worst})
+                           "speed": float(np.mean(speed[g])), "worst": worst,
+                           "scroll": _looks_like_scroll(cams, speed[g], max(w, h))})
     return glides
+
+
+def _looks_like_scroll(cams, speed, extent):
+    """A recorded scroll, not a camera move: the picture shifts along ONE axis with no zoom at all,
+    and only slows down (a trackpad flick, a browser's smooth-scroll tail).
+
+    A browser paints a scroll at whole pixels, so its slow tail stumbles exactly like zoompan -
+    but it is the recording, and a builder cannot remake it with `ccvideo move`. Such a glide is
+    reported as a WARN that says so, never as a FAIL. A camera move made by hand is caught still:
+    a zoom has a zoom term, a pan written for a shot list moves at a steady speed or on two axes."""
+    tx, ty, s = cams[:, 0], cams[:, 1], cams[:, 2]
+    shift = np.hypot(tx, ty)
+    no_zoom = np.median(np.abs(s) * extent / 2) < 0.05 * max(float(np.median(shift)), 1e-6)
+    ax, ay = float(np.sum(np.abs(tx))), float(np.sum(np.abs(ty)))
+    one_axis = min(ax, ay) < 0.15 * max(ax, ay)
+    third = max(len(speed) // 3, 1)
+    slowing = float(np.mean(speed[-third:])) < 0.5 * float(np.mean(speed[:third]))
+    return bool(no_zoom and one_axis and slowing)
 
 
 def _local_fit(v, good, win):
@@ -300,7 +325,8 @@ def _rms(values):
 
 
 def check(path):
-    """(verdict, detail) for qa: PASS, FAIL, or N/A when the camera never moves."""
+    """(verdict, detail) for qa: PASS, FAIL, WARN for a recorded scroll, or N/A when the camera
+    never moves."""
     try:
         result = measure(path)
     except SystemExit as exc:
@@ -322,15 +348,24 @@ def measure(path):
                 "detail": "no camera move found in %d frames read, so nothing was measured - "
                           "not a pass" % count}
     worst = max(glides, key=lambda g: g["score"])
-    bad = [g for g in glides if g["score"] > THRESHOLD]
-    verdict = "FAIL" if bad else "PASS"
-    shown = sorted(glides, key=lambda g: -g["score"])[:4]
+    over = [g for g in glides if g["score"] > THRESHOLD]
+    bad = [g for g in over if not g["scroll"]]
+    scrolls = [g for g in over if g["scroll"]]
+    verdict = "FAIL" if bad else ("WARN" if scrolls else "PASS")
+
+    def listed(gs):
+        return ", ".join("%s-%s %.2f" % (_clock(g["start"]), _clock(g["end"]), g["score"])
+                         for g in sorted(gs, key=lambda g: -g["score"])[:4])
+
     detail = ("%d glides, %.1fs of camera movement measured in %d frames; worst %.2f at "
-              "%s against %.2f%s" % (
-                  len(glides), seconds, count, worst["score"], _clock(worst["start"]), THRESHOLD,
-                  "" if not bad else "; shaking: " + ", ".join(
-                      "%s-%s %.2f" % (_clock(g["start"]), _clock(g["end"]), g["score"])
-                      for g in shown if g["score"] > THRESHOLD)))
+              "%s against %.2f" % (len(glides), seconds, count, worst["score"],
+                                   _clock(worst["start"]), THRESHOLD))
+    if bad:
+        detail += "; shaking: " + listed(bad)
+    if scrolls:
+        detail += ("; uneven but shaped like a recorded scroll (one axis, no zoom, slowing): "
+                   + listed(scrolls) + " - watch it: the recording cannot be remade, a camera "
+                   "move can")
     return {"frames": count, "glides": glides, "glide_seconds": seconds,
             "worst_glide": worst, "verdict": verdict, "detail": detail}
 
@@ -348,8 +383,9 @@ def main(argv=None):
         result = measure(path)
         print("%-4s STEADY %s  (%s)" % (result["verdict"], result["detail"], path))
         for g in result["glides"]:
-            print("      %s-%s  %4d frames  %.2f  worst seconds %s"
-                  % (_clock(g["start"]), _clock(g["end"]), g["frames"], g["score"], g["worst"]))
+            print("      %s-%s  %4d frames  %.2f  worst seconds %s%s"
+                  % (_clock(g["start"]), _clock(g["end"]), g["frames"], g["score"], g["worst"],
+                     "  (scroll-shaped)" if g["scroll"] else ""))
     return 0
 
 
