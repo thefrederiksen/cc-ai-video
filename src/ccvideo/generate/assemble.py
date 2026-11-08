@@ -4,7 +4,7 @@ This is the core of the GENERATE half, and it is deliberately not clever. Each s
 rendered on its own - one picture, one block of narration, a beat at each end and a slow
 alternating zoom so it does not read as a dead slideshow - and the segments are concatenated
 with the chapters written into the container. The zoom frames are drawn here, not by
-ffmpeg's zoompan, which shook (see zoom_frame).
+ffmpeg's zoompan, which shook (see zoom_frame and ccvideo.motion).
 
 TWO THINGS THAT LOOK LIKE DETAILS AND ARE NOT
 
@@ -27,7 +27,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .. import subtitles, targets
+from .. import motion, subtitles, targets
 from ..draw import render_card
 from ..level import publish_chain
 from ..narrate import speak
@@ -125,11 +125,11 @@ def zoom_frame(canvas, z):
     measured on a shipped 23 Oct 2026 tutorial, one corner of a screenshot sat still on 84 of
     118 frames and then leapt up to 1.4 px, and the viewer reported that "the screen moves
     around a lot". A fractional resize box moves it an even 0.03 px a frame instead.
+
+    The drawing itself is motion.draw, the one camera routine every zoom and pan in ccvideo
+    goes through (`ccvideo move` uses it for footage), so the two can never drift apart.
     """
-    w, h = canvas.size
-    half_w, half_h = w / (2.0 * z), h / (2.0 * z)
-    box = (w / 2.0 - half_w, h / 2.0 - half_h, w / 2.0 + half_w, h / 2.0 + half_h)
-    return canvas.resize((w, h), Image.BICUBIC, box=box)
+    return motion.draw(canvas, z)
 
 
 def _audio_filter(encode):

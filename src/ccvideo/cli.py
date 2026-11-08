@@ -18,6 +18,7 @@ import re
 import sys
 from pathlib import Path
 
+from . import __version__
 from . import brand as brandlib
 from . import targets
 
@@ -27,9 +28,12 @@ def main(argv=None):
     budget.lower_priority()   # before anything starts: every worker and ffmpeg inherits it
     parser = argparse.ArgumentParser(
         prog="ccvideo", description="Make AI videos, and cut real footage together.")
+    parser.add_argument("--version", action="version", version="ccvideo %s" % __version__,
+                        help="print the version, so every machine can be checked for a fix")
     sub = parser.add_subparsers(dest="command", required=True)
 
     _add_tutorial(sub)
+    _add_move(sub)
     _add_lint(sub)
     _add_transcribe(sub)
     _add_edit(sub)
@@ -455,6 +459,9 @@ def _add_qa(sub):
     p.add_argument("--no-speech", action="store_true",
                    help="skip the hear-back. It is the check that matters; skipping it is "
                         "for a fast local loop, never for a release")
+    p.add_argument("--no-steady", action="store_true",
+                   help="skip STEADY, the check that the picture glides and does not shake. "
+                        "For a fast local loop, never for a release")
     p.add_argument("--model", default="base.en")
     p.add_argument("--words-policy", default="default")
     p.add_argument("--fade", type=float, default=None,
@@ -474,7 +481,8 @@ def _qa(args):
                          speech=not args.no_speech,
                          model=args.model,
                          words_policy=args.words_policy,
-                         fade=args.fade)
+                         fade=args.fade,
+                         steady=not args.no_steady)
     for row in results:
         print("%-4s %-9s %s" % (row["result"], row["check"], row["detail"]))
     fails = [r for r in results if r["result"] == "FAIL"]
@@ -641,6 +649,83 @@ def _photo(args):
         return 0
     for line in photos.credits(args.folder):
         print(_ascii(line))
+    return 0
+
+
+# ------------------------------------------------------------------ move
+
+def _pair(text, what):
+    """'A:B' -> (A, B); a single 'A' -> (A, A), a camera that holds."""
+    parts = text.split(":")
+    if len(parts) == 1:
+        parts = parts * 2
+    if len(parts) != 2:
+        raise SystemExit("%s %r: write START:END, or one value to hold" % (what, text))
+    return parts
+
+
+def _point(text, what):
+    try:
+        x, y = (float(v) for v in text.split(","))
+    except ValueError:
+        raise SystemExit("%s %r: write X,Y in frame pixels, e.g. 960,540" % (what, text))
+    return x, y
+
+
+def _add_move(sub):
+    from .motion import EASES
+    p = sub.add_parser(
+        "move",
+        help="zoom and pan on footage or a still, at sub-pixel precision - the way every "
+             "camera move is made, never ffmpeg's zoompan, which shakes")
+    p.add_argument("source", help="a video, or an image (png, jpg, webp, bmp)")
+    p.add_argument("--out", required=True)
+    p.add_argument("--seconds", type=float, required=True, help="how long the shot runs")
+    p.add_argument("--from", dest="start", type=float, default=None,
+                   help="video only: where in the source the shot starts, in seconds")
+    p.add_argument("--to", dest="end", type=float, default=None,
+                   help="video only: where it ends; its last frame is held to fill --seconds")
+    p.add_argument("--speed", type=float, default=1.0, help="video only: play it this much faster")
+    p.add_argument("--zoom", default="1",
+                   help="START:END zoom, 1 = the whole frame (e.g. 1:1.45), or one value to hold")
+    p.add_argument("--centre", "--center", dest="centre", default="",
+                   help="START:END centre in frame pixels (e.g. 960,420:1040,610), or one point; "
+                        "default the middle. Kept inside the frame, as zoompan moves were")
+    p.add_argument("--move-seconds", type=float, default=None,
+                   help="how long the move takes; the camera then holds (default: the whole shot)")
+    p.add_argument("--ease", default="smooth", choices=EASES,
+                   help="smooth starts and stops gently (default); linear is constant speed")
+    p.add_argument("--before", default="",
+                   help="an ffmpeg filter in SOURCE pixels applied before the camera "
+                        "(a mask, a blur), e.g. drawbox=x=0:y=195:w=1920:h=86:color=black:t=fill")
+    p.add_argument("--size", default="1920x1080", help="the frame, WIDTHxHEIGHT")
+    p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--profile", default="footage", choices=sorted(targets.PROFILES),
+                   help="the encode profile; 'master' loses nothing for a shot that is "
+                        "encoded again later")
+    p.set_defaults(run=_move)
+
+
+def _move(args):
+    from .motion import render_move
+    z0, z1 = (float(v) for v in _pair(args.zoom, "--zoom"))
+    centre = None
+    if args.centre:
+        a, b = _pair(args.centre, "--centre")
+        centre = (_point(a, "--centre"), _point(b, "--centre"))
+    try:
+        w, h = (int(v) for v in args.size.lower().split("x"))
+    except ValueError:
+        raise SystemExit("--size %r: write WIDTHxHEIGHT, e.g. 1920x1080" % args.size)
+    if not Path(args.source).exists():
+        raise SystemExit("no such file: %s" % args.source)
+    try:
+        frames = render_move(args.source, args.out, args.seconds, (z0, z1), centre,
+                             args.start, args.end, args.speed, args.move_seconds, args.ease,
+                             args.before, (w, h), args.fps, args.profile)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    print("OK %s  %d frames, zoom %g -> %g, %s" % (args.out, frames, z0, z1, args.ease))
     return 0
 
 

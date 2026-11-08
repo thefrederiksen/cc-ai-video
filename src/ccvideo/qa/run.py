@@ -181,7 +181,7 @@ def tail_check(video, expected, model, fade, vocabulary=(), seconds=TAIL_SECONDS
 
 
 def run_checks(video, target=None, script_path=None, brand=None, speech=True,
-               model="base.en", words_policy="default", fade=None):
+               model="base.en", words_policy="default", fade=None, steady=True):
     """Run the gate. Returns a list of {check, result, detail}."""
     video = Path(video)
     if not video.exists():
@@ -228,6 +228,16 @@ def run_checks(video, target=None, script_path=None, brand=None, speech=True,
         record("RENDER", not problems,
                "; ".join(problems) or "%dx%d %.1fs %.0f fps, audio present"
                % (shape["width"], shape["height"], shape["duration"], shape["fps"]))
+
+    # STEADY - every camera move glides; none stops and jumps (see qa/steady.py). A file whose
+    # camera never moves reads N/A, never PASS: nothing was measured.
+    if shape["video"] and not audio_only:
+        if steady:
+            from .steady import check as steady_check
+            verdict, detail = steady_check(video)
+            results.append({"check": "STEADY", "result": verdict, "detail": detail})
+        else:
+            skip("STEADY", "not run, so nothing here proves the picture does not shake.")
 
     # DRIFT - the audio and video run for the same length.
     if shape["audio_duration"] is not None:
