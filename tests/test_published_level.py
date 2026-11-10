@@ -102,3 +102,23 @@ def test_a_file_it_cannot_level_stops_rather_than_shipping(tmp_path):
     with pytest.raises(SystemExit) as e:
         publish_chain(src, lufs=0.0)          # 0 LUFS is unreachable under any ceiling
     assert "conflict between the level and the ceiling" in str(e.value)
+
+
+def test_ceiling_holds_after_the_lossy_encode_it_is_destined_for(tmp_path):
+    """The ceiling is held in the FINISHED, AAC-encoded file, not only in a PCM trial.
+
+    AAC lifted the true peak 0.4-0.5 dB past a limiter that had held it in PCM, so a tutorial
+    shipped at -1.1 dBTP against -1.5 and failed the gate (9 Nov 2026). With `encode`, every trial
+    is encoded the same way before it is measured.
+    """
+    enc = targets.target("tutorial-desktop")["encode"]
+    src = _hard_to_level(tmp_path / "in.wav")
+    chain = publish_chain(src, encode=enc)
+    out = tmp_path / "out.m4a"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-af", chain, "-c:a", "aac",
+                    "-b:a", enc["audio_kbps"], "-ar", enc["sample_rate"], "-ac", enc["channels"],
+                    str(out)], check=True)
+    lufs, peak = measure(out)
+    # the old PCM-only search landed this at -19.2 LUFS after AAC; the encode-aware one at -18.0
+    assert abs(lufs - targets.PUBLISHED_LUFS) <= 0.4, "the level must hold after the AAC encode: got %.2f" % lufs
+    assert peak <= targets.PUBLISHED_TP, "the ceiling must hold after the AAC encode: got %.2f" % peak
