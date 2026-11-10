@@ -396,7 +396,8 @@ def normalise_loudness(path, lufs, encode):
     no-op keeps the assembler's byte-for-byte determinism where it used to be lost. See level.py.
     """
     path = Path(path)
-    chain = publish_chain(path, lufs)
+    # The trials are encoded exactly as this re-encode will be, so the ceiling holds in the result.
+    chain = publish_chain(path, lufs, encode=encode)
     if chain is None:
         return path
     temp = path.with_name(path.stem + ".levelled" + path.suffix)

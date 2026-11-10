@@ -71,7 +71,7 @@ def _chain(gain_db, limit_db):
             % (gain_db, 10.0 ** (limit_db / 20.0)))
 
 
-def publish_chain(path, lufs=None, ceiling=PUBLISHED_TP, attempts=ATTEMPTS):
+def publish_chain(path, lufs=None, ceiling=PUBLISHED_TP, attempts=ATTEMPTS, encode=None):
     """The audio filter chain that publishes `path` at `lufs`, or None if it is already there.
 
     Returned as a string rather than applied, because the callers apply it inside a render they
@@ -82,6 +82,13 @@ def publish_chain(path, lufs=None, ceiling=PUBLISHED_TP, attempts=ATTEMPTS):
     found. A lossy audio encode downstream can lift the true peak a little further, which the
     limiter's margin absorbs - and the quality gate measures the finished file and says so if
     it did not.
+
+    PASS `encode` WHEN THE RESULT WILL BE ENCODED LOSSILY (the target's encode dict: audio_kbps,
+    sample_rate, channels). Then every trial is encoded the same way before it is measured, so the
+    ceiling is held in the FINISHED file and not only in a PCM trial. Without it, AAC lifted the
+    true peak by 0.4-0.5 dB after the limiter: a tutorial levelled to -1.6 dBTP shipped at -1.1 and
+    failed the gate, and a second normalise_loudness found the same chain and failed again
+    (9 Nov 2026, course re-narration). The limiter's margin did not absorb it.
     """
     lufs = PUBLISHED_LUFS if lufs is None else lufs
     measured, peak = measure(path)
@@ -89,11 +96,17 @@ def publish_chain(path, lufs=None, ceiling=PUBLISHED_TP, attempts=ATTEMPTS):
         return None                                  # already published at this level
     gain, limit_db = lufs - measured, ceiling - START_MARGIN
     with tempfile.TemporaryDirectory(prefix="ccvideo-level-") as tmp:
-        trial = str(Path(tmp) / "trial.wav")
+        if encode:
+            trial = str(Path(tmp) / "trial.m4a")
+            codec = ["-c:a", "aac", "-b:a", encode["audio_kbps"], "-ar", encode["sample_rate"],
+                     "-ac", encode["channels"]]
+        else:
+            trial = str(Path(tmp) / "trial.wav")
+            codec = ["-ar", "48000", "-c:a", "pcm_s16le"]
         for _ in range(attempts):
             chain = _chain(gain, limit_db)
             run_capture_stderr(["ffmpeg", "-v", "error", "-y", "-i", str(path), "-vn",
-                                "-af", chain, "-ar", "48000", "-c:a", "pcm_s16le", trial])
+                                "-af", chain] + codec + [trial])
             measured, peak = measure(trial)
             if peak is not None and peak > ceiling:   # the ceiling is HELD, so move the threshold
                 limit_db -= (peak - ceiling) + 0.2
