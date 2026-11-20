@@ -90,6 +90,25 @@ def test_bounds_are_put_on_the_frame_grid():
     assert rr.snap([(113.9, 115.0)], 30) == [(113.9, 115.0)]
 
 
+@pytest.mark.parametrize("end", [10.043991, 10.0667, 10.044])
+def test_a_cut_to_the_end_of_a_file_that_overhangs_its_last_frame_reaches_the_end(end):
+    """A 10.044 s container whose last frame starts at 10.0 (30 fps). Each of these means 'to the end'."""
+    ranges = rr.snap([(5.0, end)], 30, total=10.044)
+    assert ranges == [(5.0, 10.044)]
+    assert rr.kept_pieces(ranges, 10.044, min_piece=1 / 30) == [(0.0, 5.0)]
+
+
+def test_a_range_from_the_start_keeps_the_rest():
+    ranges = rr.snap([(0.004, 2.0)], 30, total=10.044)
+    assert ranges == [(0.0, 2.0)]
+    assert rr.kept_pieces(ranges, 10.044, min_piece=1 / 30) == [(2.0, 10.044)]
+
+
+def test_a_range_well_past_the_end_is_still_refused():
+    with pytest.raises(SystemExit):
+        rr.kept_pieces(rr.snap([(5.0, 10.2)], 30, total=10.044), 10.044, min_piece=1 / 30)
+
+
 def test_a_range_shorter_than_a_frame_is_refused():
     with pytest.raises(SystemExit):
         rr.kept_pieces(rr.snap([(5.001, 5.010)], 30), 100.0, min_piece=1 / 30)
@@ -213,6 +232,25 @@ def test_sound_and_picture_stay_together_through_the_cut(tmp_path, ranges, remov
           % (src_picture, src_sound, picture, sound))
     assert picture == pytest.approx(10.0 - removed, abs=0.001)
     assert (sound - picture) == pytest.approx(src_sound - src_picture, abs=0.001)
+
+
+@needs_ffmpeg
+def test_cutting_to_the_end_of_remove_ranges_own_output_works(tmp_path):
+    """remove-range's own output overhangs its last frame (AAC padding). Cutting that file to its end,
+    by the end time ffprobe reports and by the start of its last frame, must both work."""
+    src, first = tmp_path / "in.mp4", tmp_path / "first.mp4"
+    _make(src, 12, size="320x240")
+    _cli_peak_kb(["remove-range", str(src), "--range", "3.0:4.0", "--out", str(first),
+                  "--target", "youtube"])
+    total = probe(first)["duration"]
+    last_frame = int(total * 30 - 1e-6) / 30
+    print("container %.4f, last frame starts %.4f" % (total, last_frame))
+    assert total > last_frame + 1e-3, "the file does not overhang its last frame - nothing is tested"
+    for i, end in enumerate((total, last_frame, last_frame + 0.011)):
+        out = tmp_path / ("to-end-%d.mp4" % i)
+        _cli_peak_kb(["remove-range", str(first), "--range", "6.0:%.6f" % end, "--out", str(out),
+                      "--target", "youtube"])
+        assert abs(probe(out)["duration"] - 6.0) <= 1 / 30 + 0.03
 
 
 @needs_ffmpeg

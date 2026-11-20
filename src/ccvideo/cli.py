@@ -549,8 +549,6 @@ def _sheet(args):
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 
 
 # ------------------------------------------------------------------ illustrate
@@ -807,3 +805,7 @@ def _image(args):
     from .imagegen import generate
     print("OK %s" % generate(args.prompt, args.out, args.size))
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

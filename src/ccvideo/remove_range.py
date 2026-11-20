@@ -64,17 +64,30 @@ def parse_range(text):
         raise SystemExit("--range %r: START and END must be numbers of seconds" % text)
 
 
-def snap(ranges, fps):
+def snap(ranges, fps, total=None):
     """Every bound moved to the nearest frame of the source: round(t * fps) / fps.
 
     The picture can only be cut on a frame; the sound can be cut on any sample. Left off the grid,
     each cut put the sound up to half a frame away from its picture, and the error added up: 13 ms
     for one cut and 73 ms after three, measured in review. Snapped, both are cut at the same instant
     and the chapters move by the same amount.
+
+    THE END OF THE FILE IS NOT ON THE GRID. A container usually runs a little past its last frame
+    (the Ritchie film is 872.097 s; its last frame starts at 872.067), so an end bound within one
+    frame of `total` - before or after it - IS the end of the file and becomes `total`. Without
+    this, a cut to the end was refused either as leaving a sliver or as running outside the file.
+    The start needs no such rule: 0 is on the grid.
     """
     if not fps or fps <= 0:
         raise SystemExit("the source reports no frame rate, so its cuts cannot be put on frames")
-    return [(round(a * fps) / fps, round(b * fps) / fps) for a, b in ranges]
+    frame = 1.0 / fps
+    snapped = []
+    for a, b in ranges:
+        a, b = round(a * fps) / fps, round(b * fps) / fps
+        if total is not None and abs(total - b) < frame:
+            b = total
+        snapped.append((a, b))
+    return snapped
 
 
 def kept_pieces(ranges, total, min_piece=0.0):
@@ -215,7 +228,7 @@ def remove_range(src, ranges, out, target_name="youtube-master"):
     if not shape["video"]:
         raise SystemExit("%s has no video stream" % src)
     total = shape["duration"]
-    ranges = snap(ranges, shape["fps"])
+    ranges = snap(ranges, shape["fps"], total)
     pieces = kept_pieces(ranges, total, min_piece=1.0 / shape["fps"])
     threads = ["-threads", str(budget.cores())]   # named, because the per-input -threads
     # make budget.ffmpeg leave a command alone, and the encoder must stay inside half the cores
