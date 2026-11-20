@@ -472,10 +472,13 @@ def _remove_range(args):
     from .shell import duration
     ranges = [parse_range(r) for r in args.ranges]
     before = duration(args.video)
-    after = remove_range(args.video, ranges, args.out, args.target)
+    after, cut = remove_range(args.video, ranges, args.out, args.target)
+    for (a, b), (sa, sb) in zip(ranges, cut):
+        if abs(a - sa) > 1e-6 or abs(b - sb) > 1e-6:
+            print("  range %g:%g cut on frames as %.4f:%.4f" % (a, b, sa, sb))
     # The ranges' own total, not before - after: the two durations are the container's and
     # can differ by a few hundredths (AAC padding), which would misreport what was taken out.
-    removed = sum(b - a for a, b in ranges)
+    removed = sum(b - a for a, b in cut)
     print("OK %s: %.3f s -> %.3f s (%.3f s removed in %d range%s)"
           % (args.out, before, after, removed, len(ranges), "" if len(ranges) == 1 else "s"))
     return 0

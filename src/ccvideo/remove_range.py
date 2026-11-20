@@ -35,6 +35,7 @@ the time removed. They are shifted here; a chapter wholly inside a removed range
 """
 
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -63,12 +64,26 @@ def parse_range(text):
         raise SystemExit("--range %r: START and END must be numbers of seconds" % text)
 
 
-def kept_pieces(ranges, total):
+def snap(ranges, fps):
+    """Every bound moved to the nearest frame of the source: round(t * fps) / fps.
+
+    The picture can only be cut on a frame; the sound can be cut on any sample. Left off the grid,
+    each cut put the sound up to half a frame away from its picture, and the error added up: 13 ms
+    for one cut and 73 ms after three, measured in review. Snapped, both are cut at the same instant
+    and the chapters move by the same amount.
+    """
+    if not fps or fps <= 0:
+        raise SystemExit("the source reports no frame rate, so its cuts cannot be put on frames")
+    return [(round(a * fps) / fps, round(b * fps) / fps) for a, b in ranges]
+
+
+def kept_pieces(ranges, total, min_piece=0.0):
     """The (start, end) pieces that remain when `ranges` are taken out of [0, total].
 
     The ranges must lie inside the file, run forwards, be sorted and not overlap. A range that
     breaks any of these is refused rather than corrected: a cut nobody asked for is worse than
-    no cut.
+    no cut. So is a kept piece shorter than `min_piece` (one frame): a range that stops within a
+    frame of the start or end of the file would leave a sliver nothing can show.
     """
     if not ranges:
         raise SystemExit("remove-range needs at least one --range START:END")
@@ -78,7 +93,8 @@ def kept_pieces(ranges, total):
             raise SystemExit("range %g:%g lies outside the file, which is %.3f s long"
                              % (a, b, total))
         if b <= a:
-            raise SystemExit("range %g:%g ends before it starts" % (a, b))
+            raise SystemExit("range %g:%g ends before it starts, or is shorter than one frame"
+                             % (a, b))
         if i and a < previous_end:
             raise SystemExit("range %g:%g overlaps or comes before the range before it; give "
                              "the ranges sorted and apart" % (a, b))
@@ -92,6 +108,10 @@ def kept_pieces(ranges, total):
         pieces.append((cursor, total))
     if not pieces:
         raise SystemExit("those ranges remove the whole file")
+    for start, end in pieces:
+        if end - start < min_piece - 1e-9:
+            raise SystemExit("the ranges leave %.3f-%.3f, shorter than one frame; take it out "
+                             "with the range beside it or leave a whole frame" % (start, end))
     return pieces
 
 
@@ -172,11 +192,16 @@ def write_ffmetadata(chapters, path):
     for start, end, title in chapters:
         lines += ["[CHAPTER]", "TIMEBASE=1/1000", "START=%d" % round(start * 1000),
                   "END=%d" % round(end * 1000), "title=%s" % _escape(title)]
-    Path(path).write_text("\n".join(lines) + "\n", encoding="ascii", errors="replace")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def remove_range(src, ranges, out, target_name="youtube-master"):
-    """Write `out`: `src` with `ranges` [(start, end), ...] taken out. Returns the new duration."""
+    """Write `out`: `src` with `ranges` [(start, end), ...] taken out.
+
+    Returns (new duration, the ranges as cut - each bound on the source's frame grid). `out` is
+    written under a sibling name and renamed only when the whole render succeeded, so a failed or
+    killed run never leaves a half-written file where the finished one belongs.
+    """
     src, out = Path(src).resolve(), Path(out).resolve()
     if src == out:
         raise SystemExit("--out must not be the input file: the input is read while the output "
@@ -190,12 +215,24 @@ def remove_range(src, ranges, out, target_name="youtube-master"):
     if not shape["video"]:
         raise SystemExit("%s has no video stream" % src)
     total = shape["duration"]
-    pieces = kept_pieces(ranges, total)
-    n = len(pieces)
+    ranges = snap(ranges, shape["fps"])
+    pieces = kept_pieces(ranges, total, min_piece=1.0 / shape["fps"])
     threads = ["-threads", str(budget.cores())]   # named, because the per-input -threads
     # make budget.ffmpeg leave a command alone, and the encoder must stay inside half the cores
 
     out.parent.mkdir(parents=True, exist_ok=True)
+    partial = out.with_name(".%s.partial%s" % (out.stem, out.suffix))
+    try:
+        _render(src, pieces, ranges, total, shape, target, encode, threads, partial)
+        os.replace(partial, out)
+    finally:
+        if partial.exists():
+            partial.unlink()
+    return probe(out)["duration"], ranges
+
+
+def _render(src, pieces, ranges, total, shape, target, encode, threads, out):
+    n = len(pieces)
     with tempfile.TemporaryDirectory(prefix="ccvideo-remove-") as tmp:
         tmp = Path(tmp)
         audio = None
@@ -239,4 +276,3 @@ def remove_range(src, ranges, out, target_name="youtube-master"):
             + ["-filter_complex", graph] + maps + targets.video_args(encode)
             + (targets.audio_args(encode) if audio is not None else [])
             + ["-movflags", "+faststart"] + threads + [str(out)])
-    return probe(out)["duration"]

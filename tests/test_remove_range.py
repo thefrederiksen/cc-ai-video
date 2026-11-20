@@ -85,6 +85,46 @@ def test_a_chapter_wholly_inside_a_removed_range_is_dropped():
     assert moved[1][0] == pytest.approx(9.5)
 
 
+def test_bounds_are_put_on_the_frame_grid():
+    assert rr.snap([(5.013, 6.52)], 30) == [(5.0, 196 / 30)]
+    assert rr.snap([(113.9, 115.0)], 30) == [(113.9, 115.0)]
+
+
+def test_a_range_shorter_than_a_frame_is_refused():
+    with pytest.raises(SystemExit):
+        rr.kept_pieces(rr.snap([(5.001, 5.010)], 30), 100.0, min_piece=1 / 30)
+
+
+def test_a_sliver_left_at_either_end_is_refused():
+    with pytest.raises(SystemExit):
+        rr.kept_pieces([(0.02, 5.0)], 100.0, min_piece=1 / 30)
+    with pytest.raises(SystemExit):
+        rr.kept_pieces([(90.0, 99.99)], 100.0, min_piece=1 / 30)
+
+
+def test_a_failed_render_leaves_no_file_at_the_output(tmp_path, monkeypatch):
+    src, out = tmp_path / "in.mp4", tmp_path / "out.mp4"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(rr, "probe", lambda p: {"duration": 20.0, "video": True, "audio": True,
+                                               "fps": 30.0})
+
+    def half_written(*args):
+        args[-1].write_bytes(b"half")            # the partial file, as a killed ffmpeg leaves it
+        raise RuntimeError("ffmpeg was killed")
+    monkeypatch.setattr(rr, "_render", half_written)
+    with pytest.raises(RuntimeError):
+        rr.remove_range(src, [(5.0, 6.0)], out, "youtube")
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == [src]
+
+
+def test_chapter_titles_keep_their_letters(tmp_path):
+    meta = tmp_path / "m.txt"
+    rr.write_ffmetadata([(0.0, 1.0, "Caf\u00e9 = 1; #2")], meta)
+    text = meta.read_text(encoding="utf-8")
+    assert "title=Caf\u00e9 \\= 1\\; \\#2" in text
+
+
 def test_a_time_inside_a_range_lands_on_its_start():
     assert rr.shift(114.5, [(113.9, 115.0)]) == pytest.approx(113.9)
     assert rr.shift(50.0, [(113.9, 115.0)]) == pytest.approx(50.0)
@@ -131,26 +171,48 @@ def test_short_cut_keeps_length_level_and_faststart(tmp_path):
     assert moov != -1 and (mdat == -1 or moov < mdat), "moov is not at the front: not faststart"
 
 
+def _onsets(path):
+    """(picture onset, sound onset): when the black picture turns white, and when the tone starts."""
+    log = subprocess.run(["ffmpeg", "-v", "info", "-i", str(path),
+                          "-vf", "blackdetect=d=0.5:pix_th=0.1",
+                          "-af", "silencedetect=n=-30dB:d=0.5", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    picture = [float(x.split()[0]) for x in log.split("black_end:")[1:]]
+    sound = [float(x.split()[0]) for x in log.split("silence_end: ")[1:]]
+    assert picture and sound, "no onset was measured - the instrument did not run:\n" + log[-2000:]
+    return picture[0], sound[0]
+
+
 @needs_ffmpeg
-def test_the_audio_cut_is_exact_to_the_millisecond(tmp_path):
-    """A tone starts at 10.0 s. Remove 5.0-6.5 and it must start at 8.5 s, within 5 ms: the cut
-    lands where the timestamps say, and nothing slides the sound against the picture."""
-    src, out = tmp_path / "tone.mp4", tmp_path / "out.mp4"
+@pytest.mark.parametrize("ranges,removed", [
+    (["5.0:6.5"], 1.5),
+    # Off the frame grid: 5.013 -> 5.0 and 6.52 -> 6.5333 (frames 150 and 196 at 30 fps).
+    (["5.013:6.52"], 196 / 30 - 5.0),
+    (["1.013:1.52", "3.007:4.49", "6.52:7.013"], (46 - 30) / 30 + (135 - 90) / 30 + (210 - 196) / 30),
+], ids=["on the grid", "off the grid", "three cuts off the grid"])
+def test_sound_and_picture_stay_together_through_the_cut(tmp_path, ranges, removed):
+    """The picture turns from black to white at 10.0 s and a tone starts at the same moment. After the
+    cut both must still start together - within 1 ms of how they started in the source - and at
+    10.0 s less what was removed. Before the bounds were put on frames, an off-grid cut moved the
+    sound 13 ms against the picture, and three cuts 73 ms (review of cc-ai-video#29)."""
+    src, out = tmp_path / "onset.mp4", tmp_path / "out.mp4"
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y",
-         "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=16",
          "-f", "lavfi", "-i",
-         "aevalsrc='if(gte(t,10),0.5*sin(2*PI*440*t),0)':s=48000:d=16",
+         "color=c=white:s=320x240:r=30:d=16,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='lt(t,10)'",
+         "-f", "lavfi", "-i", "aevalsrc='if(gte(t,10),0.5*sin(2*PI*440*t),0)':s=48000:d=16",
          "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
          "-c:a", "aac", "-b:a", "128k", "-shortest", str(src)], check=True)
-    _cli_peak_kb(["remove-range", str(src), "--range", "5.0:6.5", "--out", str(out),
-                  "--target", "youtube"])
-    log = subprocess.run(["ffmpeg", "-v", "info", "-i", str(out), "-vn", "-af",
-                          "silencedetect=n=-30dB:d=0.5", "-f", "null", "-"],
-                         capture_output=True, text=True).stderr
-    ends = [float(x.split()[0]) for x in log.split("silence_end: ")[1:]]
-    assert ends, "silencedetect saw no tone at all - the measurement did not run:\n" + log[-2000:]
-    assert ends[0] == pytest.approx(8.5, abs=0.005)
+    src_picture, src_sound = _onsets(src)
+    args = ["remove-range", str(src), "--out", str(out), "--target", "youtube"]
+    for r in ranges:
+        args += ["--range", r]
+    _cli_peak_kb(args)
+    picture, sound = _onsets(out)
+    print("source picture %.4f sound %.4f; cut picture %.4f sound %.4f"
+          % (src_picture, src_sound, picture, sound))
+    assert picture == pytest.approx(10.0 - removed, abs=0.001)
+    assert (sound - picture) == pytest.approx(src_sound - src_picture, abs=0.001)
 
 
 @needs_ffmpeg
