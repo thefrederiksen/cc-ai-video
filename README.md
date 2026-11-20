@@ -129,6 +129,23 @@ and that region is scaled **up** instead. The renderer measures the blow-up for 
 tells you which are too small - it never guesses a crop for you, because which part of a
 screen matters is a judgment about the content.
 
+### Take a moment out of a finished film
+
+```
+ccvideo remove-range film.mp4 --range 113.9:115.0 [--range a:b ...] --out film-cut.mp4 --target youtube-master
+```
+
+**Use this. Never hand-write a `filter_complex` that uses one input twice** (`[0:v]trim=0:A` and
+`[0:v]trim=B` into one `concat`). ffmpeg then holds every decoded frame of the second piece in
+memory while it writes the first: 34 GB on an 872 s 1080p film, and on 16 and 20 November 2026
+that took down the whole Director the job ran under, every session with it.
+
+`remove-range` opens the source once per kept piece, each with its own seek, so memory stays
+flat whatever the length (under 1 GB at 1080p, tested on a 10-minute file). It keeps the
+target's encode settings and `+faststart`, publishes the audio at the one level, puts a 10 ms
+de-click on each seam, refuses ranges that overlap, run backwards or leave the file, and prints
+the new duration. Run `ccvideo qa` on the result as on any render.
+
 ## The QA gate
 
 ```
