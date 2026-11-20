@@ -37,6 +37,7 @@ def main(argv=None):
     _add_lint(sub)
     _add_transcribe(sub)
     _add_edit(sub)
+    _add_remove_range(sub)
     _add_qa(sub)
     _add_sheet(sub)
     _add_illustrate(sub)
@@ -447,6 +448,42 @@ def _render(args):
     return 0
 
 
+# ------------------------------------------------------------------ remove-range
+
+def _add_remove_range(sub):
+    p = sub.add_parser(
+        "remove-range",
+        help="take time ranges out of a FINISHED video at flat memory; use this, never a "
+             "hand-written trim/concat on one input")
+    p.add_argument("video", help="the finished file to cut")
+    p.add_argument("--range", dest="ranges", action="append", default=[], metavar="START:END",
+                   help="seconds to take out, e.g. 113.9:115.0. Repeat for several; give them "
+                        "sorted and apart")
+    p.add_argument("--out", required=True, help="the new file; never the input")
+    p.add_argument("--target", default="youtube-master",
+                   choices=sorted(n for n, t in targets.TARGETS.items() if not t.get("audio_only")),
+                   help="the target the source was made for; its encode settings and the one "
+                        "published level are kept (default youtube-master)")
+    p.set_defaults(run=_remove_range)
+
+
+def _remove_range(args):
+    from .remove_range import parse_range, remove_range
+    from .shell import duration
+    ranges = [parse_range(r) for r in args.ranges]
+    before = duration(args.video)
+    after, cut = remove_range(args.video, ranges, args.out, args.target)
+    for (a, b), (sa, sb) in zip(ranges, cut):
+        if abs(a - sa) > 1e-6 or abs(b - sb) > 1e-6:
+            print("  range %g:%g cut on frames as %.4f:%.4f" % (a, b, sa, sb))
+    # The ranges' own total, not before - after: the two durations are the container's and
+    # can differ by a few hundredths (AAC padding), which would misreport what was taken out.
+    removed = sum(b - a for a, b in cut)
+    print("OK %s: %.3f s -> %.3f s (%.3f s removed in %d range%s)"
+          % (args.out, before, after, removed, len(ranges), "" if len(ranges) == 1 else "s"))
+    return 0
+
+
 # ------------------------------------------------------------------ qa
 
 def _add_qa(sub):
@@ -512,8 +549,6 @@ def _sheet(args):
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 
 
 # ------------------------------------------------------------------ illustrate
@@ -770,3 +805,7 @@ def _image(args):
     from .imagegen import generate
     print("OK %s" % generate(args.prompt, args.out, args.size))
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
